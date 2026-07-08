@@ -26,12 +26,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
+    "publisher": "VoiceFlow Local",
+    "copyright": "Copyright © 2026 VoiceFlow Local",
+    "category": "Productivity",
+    "shortDescription": "Local-first voice-to-clipboard assistant",
+    "longDescription": "VoiceFlow Local turns speech into polished, paste-ready text entirely on your machine — global hotkey to record, local transcription and rewrite, then copy. No cloud, no history, no telemetry.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
+      "icons/128x128@2x.png",
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
   }
 }

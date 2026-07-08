@@ -52,7 +52,39 @@ impl LocalWhisperTranscriptionProvider {
             })
         }
     }
+
+    /// Cheap sanity check that the model file looks like a real GGML model
+    /// before we hand it to whisper.cpp. Returns [`VfError::ModelInvalid`] for
+    /// obviously bad files (empty, truncated download, or a Git-LFS pointer) so
+    /// the user gets an actionable message instead of a cryptic native crash.
+    #[cfg(feature = "whisper")]
+    pub fn validate_model(&self) -> Result<(), VfError> {
+        self.ensure_model_present()?;
+        let len = std::fs::metadata(&self.model_path)
+            .map_err(|e| VfError::ModelInvalid {
+                detail: format!(
+                    "cannot read model metadata at {}: {e}",
+                    self.model_path.display()
+                ),
+            })?
+            .len();
+        if len < MIN_PLAUSIBLE_MODEL_BYTES {
+            return Err(VfError::ModelInvalid {
+                detail: format!(
+                    "the model file at {} is only {len} bytes; a valid GGML Whisper model is tens \
+of MB. The download is likely incomplete or a Git-LFS pointer file — re-download it.",
+                    self.model_path.display()
+                ),
+            });
+        }
+        Ok(())
+    }
 }
+
+/// Minimum plausible size for a real GGML Whisper model (the smallest, `tiny`,
+/// is ~75 MB). Anything below this is not a usable model file.
+#[cfg(feature = "whisper")]
+const MIN_PLAUSIBLE_MODEL_BYTES: u64 = 1_000_000;
 
 #[async_trait]
 impl TranscriptionProvider for LocalWhisperTranscriptionProvider {
@@ -78,6 +110,10 @@ fn run_whisper(model_path: &Path, language: &str, wav: &Path) -> Result<String, 
     };
 
     use crate::audio::wav::read_wav_as_f32_mono;
+
+    // Reject obviously-bad model files up front (truncated / LFS pointer) so the
+    // native loader never sees them.
+    LocalWhisperTranscriptionProvider::new(model_path.to_path_buf()).validate_model()?;
 
     // Decode the WAV to the f32 mono samples whisper expects.
     let (samples, sample_rate) = read_wav_as_f32_mono(wav)?;
@@ -133,4 +169,47 @@ fn run_whisper(_model_path: &Path, _language: &str, _wav: &Path) -> Result<Strin
 default features (requires CMake + a C/C++ toolchain) to enable local transcription."
             .to_string(),
     })
+}
+
+#[cfg(all(test, feature = "whisper"))]
+mod smoke {
+    //! Opt-in real-model smoke test. Ignored by default because it needs a
+    //! local GGML model and a WAV. Run it explicitly (from `src-tauri`):
+    //!
+    //! ```powershell
+    //! $env:WHISPER_SMOKE_MODEL = "C:\path\to\ggml-tiny.en.bin"
+    //! $env:WHISPER_SMOKE_WAV   = "C:\path\to\jfk.wav"   # 16 kHz mono
+    //! cargo test smoke -- --ignored --nocapture
+    //! ```
+    //!
+    //! It exercises the full local path: model validation → WAV decode →
+    //! whisper.cpp load → inference, and asserts the transcript is non-empty and
+    //! contains an expected word from the sample clip.
+    use super::*;
+
+    #[test]
+    #[ignore = "needs WHISPER_SMOKE_MODEL + WHISPER_SMOKE_WAV pointing at a real model/clip"]
+    fn transcribes_known_clip() {
+        let model = std::env::var("WHISPER_SMOKE_MODEL")
+            .expect("set WHISPER_SMOKE_MODEL to a GGML model path");
+        let wav = std::env::var("WHISPER_SMOKE_WAV")
+            .expect("set WHISPER_SMOKE_WAV to a 16 kHz mono WAV path");
+
+        let provider = LocalWhisperTranscriptionProvider::new(model.into());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let text = rt
+            .block_on(provider.transcribe(Path::new(&wav)))
+            .expect("transcription should succeed");
+
+        eprintln!("SMOKE TRANSCRIPT: {text}");
+        assert!(!text.trim().is_empty(), "transcript must not be empty");
+        let expect = std::env::var("WHISPER_SMOKE_EXPECT").unwrap_or_else(|_| "country".to_string());
+        assert!(
+            text.to_lowercase().contains(&expect.to_lowercase()),
+            "expected transcript to contain {expect:?}, got: {text:?}"
+        );
+    }
 }
