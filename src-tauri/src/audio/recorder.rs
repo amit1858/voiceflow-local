@@ -48,7 +48,7 @@ impl ActiveRecording {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err(VfError::AudioCaptureFailed {
+                Err(VfError::AudioStartFailed {
                     detail: "capture thread exited before start".into(),
                 })
             }
@@ -63,7 +63,7 @@ impl ActiveRecording {
         match self.thread.join() {
             Ok(Ok(())) => Ok(self.output_path),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(VfError::AudioCaptureFailed {
+            Err(_) => Err(VfError::AudioStopFailed {
                 detail: "capture thread panicked".into(),
             }),
         }

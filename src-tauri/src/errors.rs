@@ -11,36 +11,74 @@ use serde::Serialize;
 /// remediation detail (e.g. an exact model path or a shell command).
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum VfError {
+    // ---- Audio ----------------------------------------------------------
     #[error("Microphone permission was denied")]
     MicPermissionDenied,
 
     #[error("No microphone/input device was found")]
     NoMicrophone,
 
+    #[error("Failed to start audio capture")]
+    AudioStartFailed { detail: String },
+
+    #[error("Failed to stop audio capture")]
+    AudioStopFailed { detail: String },
+
+    #[error("Audio capture failed")]
+    AudioCaptureFailed { detail: String },
+
+    #[error("The captured audio file is missing or invalid")]
+    InvalidAudioFile { detail: String },
+
+    #[error("Failed to clean up temporary audio files")]
+    TempCleanupFailed { detail: String },
+
+    // ---- Whisper / transcription ---------------------------------------
     #[error("The local Whisper model file is missing")]
     ModelMissing { expected_path: String, hint: String },
+
+    #[error("The Whisper model file is invalid or unreadable")]
+    #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+    ModelInvalid { detail: String },
 
     #[error("Failed to load the Whisper model")]
     #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
     ModelLoadFailed { detail: String },
 
-    #[error("Microsoft Foundry Local is not available")]
-    FoundryUnavailable { detail: String },
-
     #[error("Transcription failed")]
     TranscriptionFailed { detail: String },
+
+    // ---- Foundry Local / rewrite ---------------------------------------
+    #[error("Microsoft Foundry Local is not installed")]
+    FoundryNotInstalled,
+
+    #[error("The Foundry Local service is not running")]
+    FoundryServiceNotRunning { detail: String },
+
+    #[error("Could not discover the Foundry Local endpoint port")]
+    FoundryPortNotDiscovered { detail: String },
+
+    #[error("The Phi model is not installed in Foundry Local")]
+    PhiNotInstalled { model: String },
+
+    #[error("Foundry Local did not respond")]
+    FoundryNoResponse { detail: String },
+
+    #[error("Foundry Local timed out")]
+    FoundryTimeout { detail: String },
 
     #[error("Rewriting failed")]
     RewriteFailed { detail: String },
 
-    #[error("Audio capture failed")]
-    AudioCaptureFailed { detail: String },
-
+    // ---- App / state ----------------------------------------------------
     #[error("A recording is already in progress")]
     AlreadyRecording,
 
     #[error("No recording is in progress")]
     NotRecording,
+
+    #[error("Failed to read or write settings")]
+    SettingsError { detail: String },
 
     #[error("Internal error")]
     Internal { detail: String },
@@ -52,14 +90,25 @@ impl VfError {
         match self {
             VfError::MicPermissionDenied => "MicPermissionDenied",
             VfError::NoMicrophone => "NoMicrophone",
-            VfError::ModelMissing { .. } => "ModelMissing",
-            VfError::ModelLoadFailed { .. } => "ModelLoadFailed",
-            VfError::FoundryUnavailable { .. } => "FoundryUnavailable",
-            VfError::TranscriptionFailed { .. } => "TranscriptionFailed",
-            VfError::RewriteFailed { .. } => "RewriteFailed",
+            VfError::AudioStartFailed { .. } => "AudioStartFailed",
+            VfError::AudioStopFailed { .. } => "AudioStopFailed",
             VfError::AudioCaptureFailed { .. } => "AudioCaptureFailed",
+            VfError::InvalidAudioFile { .. } => "InvalidAudioFile",
+            VfError::TempCleanupFailed { .. } => "TempCleanupFailed",
+            VfError::ModelMissing { .. } => "ModelMissing",
+            VfError::ModelInvalid { .. } => "ModelInvalid",
+            VfError::ModelLoadFailed { .. } => "ModelLoadFailed",
+            VfError::TranscriptionFailed { .. } => "TranscriptionFailed",
+            VfError::FoundryNotInstalled => "FoundryNotInstalled",
+            VfError::FoundryServiceNotRunning { .. } => "FoundryServiceNotRunning",
+            VfError::FoundryPortNotDiscovered { .. } => "FoundryPortNotDiscovered",
+            VfError::PhiNotInstalled { .. } => "PhiNotInstalled",
+            VfError::FoundryNoResponse { .. } => "FoundryNoResponse",
+            VfError::FoundryTimeout { .. } => "FoundryTimeout",
+            VfError::RewriteFailed { .. } => "RewriteFailed",
             VfError::AlreadyRecording => "AlreadyRecording",
             VfError::NotRecording => "NotRecording",
+            VfError::SettingsError { .. } => "SettingsError",
             VfError::Internal { .. } => "Internal",
         }
     }
@@ -70,13 +119,37 @@ impl VfError {
             VfError::ModelMissing { expected_path, hint } => {
                 Some(format!("Expected model at: {expected_path}\n{hint}"))
             }
-            VfError::FoundryUnavailable { detail } => Some(format!(
-                "{detail}\nInstall with `winget install Microsoft.FoundryLocal`, then run `foundry service start` and `foundry model load phi-4-mini-instruct`."
+            VfError::FoundryNotInstalled => Some(
+                "Install with `winget install Microsoft.FoundryLocal`, then run \
+`foundry service start` and `foundry model load phi-4-mini-instruct`. You can keep using \
+Mock mode in Settings until it is ready."
+                    .to_string(),
+            ),
+            VfError::FoundryServiceNotRunning { .. } => {
+                Some("Run `foundry service start` in a terminal, then retry.".to_string())
+            }
+            VfError::FoundryPortNotDiscovered { .. } => Some(
+                "Could not parse the endpoint from `foundry service status`. Restart the service \
+or set a manual endpoint override in Settings."
+                    .to_string(),
+            ),
+            VfError::PhiNotInstalled { model } => Some(format!(
+                "Run `foundry model download {model}` then `foundry model load {model}`."
             )),
-            VfError::ModelLoadFailed { detail }
+            VfError::FoundryTimeout { .. } => {
+                Some("The model may still be loading. Wait a moment and try again.".to_string())
+            }
+            VfError::ModelInvalid { detail }
+            | VfError::ModelLoadFailed { detail }
             | VfError::TranscriptionFailed { detail }
             | VfError::RewriteFailed { detail }
+            | VfError::AudioStartFailed { detail }
+            | VfError::AudioStopFailed { detail }
             | VfError::AudioCaptureFailed { detail }
+            | VfError::InvalidAudioFile { detail }
+            | VfError::TempCleanupFailed { detail }
+            | VfError::FoundryNoResponse { detail }
+            | VfError::SettingsError { detail }
             | VfError::Internal { detail } => {
                 if detail.is_empty() {
                     None

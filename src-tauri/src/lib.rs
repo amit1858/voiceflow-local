@@ -7,15 +7,18 @@
 mod audio;
 mod commands;
 mod errors;
+mod health;
 mod pipeline;
 mod rewrite;
+mod settings;
 mod state;
 mod transcription;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-use state::{AppState, DEFAULT_HOTKEY};
+use settings::Settings;
+use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,22 +35,27 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            // Resolve `<app data>/models`, where the whisper GGML model lives.
-            let model_dir = app
+            // Resolve the app data dir and `<app data>/models`, where the whisper
+            // GGML model lives.
+            let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join("models");
+                .unwrap_or_else(|_| std::env::temp_dir());
+            let model_dir = app_data_dir.join("models");
             if let Err(e) = std::fs::create_dir_all(&model_dir) {
                 eprintln!("Warning: could not create model dir {model_dir:?}: {e}");
             }
 
-            app.manage(AppState::new(model_dir));
+            // Load settings (mock-first defaults on a fresh install).
+            let settings = Settings::load_or_default(&app_data_dir, &model_dir);
+            let hotkey = settings.hotkey.clone();
 
-            // Register the default global hotkey. The plugin handler above emits
-            // "hotkey-toggle" whenever it (or any later hotkey) is pressed.
-            if let Err(e) = app.global_shortcut().register(DEFAULT_HOTKEY) {
-                eprintln!("Warning: failed to register default hotkey {DEFAULT_HOTKEY}: {e}");
+            app.manage(AppState::new(app_data_dir, model_dir, settings));
+
+            // Register the configured global hotkey. The plugin handler above
+            // emits "hotkey-toggle" whenever it is pressed.
+            if let Err(e) = app.global_shortcut().register(hotkey.as_str()) {
+                eprintln!("Warning: failed to register hotkey {hotkey}: {e}");
             }
 
             Ok(())
@@ -58,6 +66,10 @@ pub fn run() {
             commands::cancel_recording,
             commands::get_hotkey,
             commands::set_hotkey,
+            commands::get_settings,
+            commands::save_settings,
+            commands::run_health_checks,
+            commands::clear_temp_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VoiceFlow Local");

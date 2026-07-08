@@ -47,14 +47,25 @@ export const OUTPUT_MODES: OutputModeOption[] = [
 export type VfErrorCode =
   | "MicPermissionDenied"
   | "NoMicrophone"
-  | "ModelMissing"
-  | "ModelLoadFailed"
-  | "FoundryUnavailable"
-  | "TranscriptionFailed"
-  | "RewriteFailed"
+  | "AudioStartFailed"
+  | "AudioStopFailed"
   | "AudioCaptureFailed"
+  | "InvalidAudioFile"
+  | "TempCleanupFailed"
+  | "ModelMissing"
+  | "ModelInvalid"
+  | "ModelLoadFailed"
+  | "TranscriptionFailed"
+  | "FoundryNotInstalled"
+  | "FoundryServiceNotRunning"
+  | "FoundryPortNotDiscovered"
+  | "PhiNotInstalled"
+  | "FoundryNoResponse"
+  | "FoundryTimeout"
+  | "RewriteFailed"
   | "AlreadyRecording"
   | "NotRecording"
+  | "SettingsError"
   | "Internal";
 
 /** Serialized form of a Rust `VfError`. */
@@ -77,6 +88,34 @@ export interface PipelineResult {
 
 export type RecordingState = "idle" | "recording" | "processing";
 
+/** Transcription provider selector. Matches Rust `TranscriptionKind`. */
+export type TranscriptionKind = "mock" | "local_whisper";
+/** Rewrite provider selector. Matches Rust `RewriteKind`. */
+export type RewriteKind = "mock" | "foundry_local";
+
+/** User settings. Field names match Rust `Settings` (snake_case). */
+export interface Settings {
+  hotkey: string;
+  default_mode: OutputMode;
+  transcription_provider: TranscriptionKind;
+  rewrite_provider: RewriteKind;
+  whisper_model_path: string;
+  foundry_model: string;
+  foundry_endpoint: string | null;
+  auto_copy: boolean;
+}
+
+/** Outcome of a single health check. Matches Rust `HealthStatus`. */
+export type HealthStatus = "pass" | "fail" | "skipped";
+
+/** A single health-check result. Matches Rust `HealthCheck`. */
+export interface HealthCheck {
+  id: string;
+  label: string;
+  status: HealthStatus;
+  message: string;
+}
+
 /** Type guard so React can render VfError banners for command failures. */
 export function isVfError(value: unknown): value is VfError {
   return (
@@ -93,18 +132,39 @@ export const ERROR_REMEDIATION: Record<VfErrorCode, string> = {
     "Grant microphone access to VoiceFlow Local in Windows Settings → Privacy → Microphone.",
   NoMicrophone:
     "No microphone was found. Connect a mic or check your input device.",
-  ModelMissing:
-    "The local Whisper model file is missing. See the hint for the expected path and download instructions.",
-  ModelLoadFailed:
-    "The Whisper model could not be loaded. It may be corrupted — re-download it.",
-  FoundryUnavailable:
-    "Microsoft Foundry Local is not available. Install it with `winget install Microsoft.FoundryLocal`, then run `foundry service start`.",
-  TranscriptionFailed: "Transcription failed. Try recording again.",
-  RewriteFailed:
-    "Rewriting failed. The Foundry model may be busy or unloaded — try again or reload it.",
+  AudioStartFailed:
+    "Recording could not start. Make sure the mic isn't in use by another app and try again.",
+  AudioStopFailed:
+    "Recording could not stop cleanly. Try recording again.",
   AudioCaptureFailed:
     "Audio capture failed. Check that your microphone is working and not in use by another app.",
+  InvalidAudioFile:
+    "The captured audio was missing or invalid. Record again and speak close to the mic.",
+  TempCleanupFailed:
+    "Temporary audio files could not be removed. You can retry from Settings → Clear temp files.",
+  ModelMissing:
+    "The local Whisper model file is missing. See the hint for the expected path and download instructions.",
+  ModelInvalid:
+    "The Whisper model file is invalid or unreadable. Re-download a supported GGML model.",
+  ModelLoadFailed:
+    "The Whisper model could not be loaded. It may be corrupted — re-download it.",
+  TranscriptionFailed: "Transcription failed. Try recording again.",
+  FoundryNotInstalled:
+    "Microsoft Foundry Local is not installed. Install it with `winget install Microsoft.FoundryLocal`, then run `foundry service start`. You can keep using Mock mode meanwhile.",
+  FoundryServiceNotRunning:
+    "The Foundry Local service is not running. Run `foundry service start` and retry.",
+  FoundryPortNotDiscovered:
+    "Could not discover the Foundry Local endpoint. Restart the service or set a manual endpoint override in Settings.",
+  PhiNotInstalled:
+    "The Phi model isn't installed in Foundry Local. Run `foundry model download phi-4-mini-instruct` then `foundry model load phi-4-mini-instruct`.",
+  FoundryNoResponse:
+    "Foundry Local did not respond. Make sure the service is running and reachable.",
+  FoundryTimeout:
+    "Foundry Local timed out. The model may still be loading — wait a moment and try again.",
+  RewriteFailed:
+    "Rewriting failed. The Foundry model may be busy or unloaded — try again or reload it.",
   AlreadyRecording: "A recording is already in progress.",
   NotRecording: "No recording is in progress.",
+  SettingsError: "Settings could not be read or saved.",
   Internal: "An unexpected error occurred.",
 };

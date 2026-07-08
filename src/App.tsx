@@ -1,19 +1,62 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
+import { HealthPanel } from "./components/HealthPanel";
 import { OutputModePicker } from "./components/OutputModePicker";
 import { PreviewPane } from "./components/PreviewPane";
+import { PrivacyNote } from "./components/PrivacyNote";
 import { RecordingIndicator } from "./components/RecordingIndicator";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { Toast } from "./components/Toast";
 import { useHotkeyStatus } from "./hooks/useHotkeyStatus";
 import { useRecorder } from "./hooks/useRecorder";
-import { copyToClipboard } from "./lib/ipc";
-import type { OutputMode, VfError } from "./lib/types";
+import {
+  clearTempFiles,
+  copyToClipboard,
+  getSettings,
+  runHealthChecks,
+  saveSettings,
+} from "./lib/ipc";
+import type {
+  HealthCheck,
+  OutputMode,
+  PipelineResult,
+  Settings,
+  VfError,
+} from "./lib/types";
 import "./App.css";
 
+type Tab = "main" | "settings" | "health";
+
 export default function App() {
+  const [tab, setTab] = useState<Tab>("main");
   const [mode, setMode] = useState<OutputMode>("raw");
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [copyError, setCopyError] = useState<VfError | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [health, setHealth] = useState<HealthCheck[]>([]);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
 
   const recorder = useRecorder();
+
+  // Load settings once on mount and seed the default output mode.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await getSettings();
+        if (cancelled) return;
+        setSettings(s);
+        setMode(s.default_mode);
+      } catch (err) {
+        if (!cancelled) setCopyError(err as VfError);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // The hotkey handler must always use the latest `mode`; the hook keeps the
   // handler in a ref so this closure stays current without re-subscribing.
@@ -27,8 +70,57 @@ export default function App() {
     setCopyError(null);
     try {
       await copyToClipboard(text);
+      setToast("Copied to clipboard");
     } catch (err) {
       setCopyError(err as VfError);
+    }
+  }, []);
+
+  // Auto-copy after processing (when enabled). Guard against copying the same
+  // result object twice.
+  const lastAutoCopied = useRef<PipelineResult | null>(null);
+  useEffect(() => {
+    if (!settings?.auto_copy) return;
+    const res = recorder.result;
+    if (!res || res === lastAutoCopied.current) return;
+    lastAutoCopied.current = res;
+    void handleCopy(res.output);
+  }, [recorder.result, settings?.auto_copy, handleCopy]);
+
+  const handleSaveSettings = useCallback(async (next: Settings) => {
+    setSavingSettings(true);
+    setCopyError(null);
+    try {
+      const saved = await saveSettings(next);
+      setSettings(saved);
+      setToast("Settings saved");
+    } catch (err) {
+      setCopyError(err as VfError);
+    } finally {
+      setSavingSettings(false);
+    }
+  }, []);
+
+  const handleClearTemp = useCallback(async () => {
+    setCopyError(null);
+    try {
+      const removed = await clearTempFiles();
+      setToast(`Removed ${removed} temp file${removed === 1 ? "" : "s"}`);
+    } catch (err) {
+      setCopyError(err as VfError);
+    }
+  }, []);
+
+  const handleRunHealth = useCallback(async () => {
+    setHealthLoading(true);
+    setCopyError(null);
+    try {
+      const checks = await runHealthChecks();
+      setHealth(checks);
+    } catch (err) {
+      setCopyError(err as VfError);
+    } finally {
+      setHealthLoading(false);
     }
   }, []);
 
@@ -46,57 +138,121 @@ export default function App() {
         ? "Working…"
         : "Start recording";
 
+  const providerBadge = settings
+    ? `${settings.transcription_provider === "mock" ? "Mock STT" : "Whisper"} · ${
+        settings.rewrite_provider === "mock" ? "Mock rewrite" : "Foundry Local"
+      }`
+    : "…";
+
   return (
     <div className="app">
       <header className="app__header">
-        <h1 className="app__title">VoiceFlow Local</h1>
-        <p className="app__subtitle">
-          Local voice → clipboard. Nothing leaves your machine.
-        </p>
+        <div>
+          <h1 className="app__title">VoiceFlow Local</h1>
+          <p className="app__subtitle">
+            Local voice → clipboard. Nothing leaves your machine.
+          </p>
+        </div>
+        <span className="app__badge" title="Active providers">
+          {providerBadge}
+        </span>
       </header>
 
-      <ErrorBanner error={activeError} onDismiss={dismissError} />
-
-      <section className="app__panel">
-        <RecordingIndicator state={recorder.state} hotkey={hotkey} />
-
-        <div className="app__controls">
+      <nav className="tabs" role="tablist">
+        {(["main", "settings", "health"] as Tab[]).map((t) => (
           <button
+            key={t}
             type="button"
-            className={
-              "btn btn--record" +
-              (recorder.state === "recording" ? " btn--record-active" : "")
-            }
-            disabled={recorder.state === "processing"}
-            onClick={() => void recorder.toggle(mode)}
+            role="tab"
+            aria-selected={tab === t}
+            className={"tabs__tab" + (tab === t ? " tabs__tab--active" : "")}
+            onClick={() => setTab(t)}
           >
-            {buttonLabel}
+            {t === "main" ? "Record" : t === "settings" ? "Settings" : "Health"}
           </button>
-          {recorder.state === "recording" && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => void recorder.cancel()}
-            >
-              Cancel
-            </button>
+        ))}
+      </nav>
+
+      <ErrorBanner error={activeError} onDismiss={dismissError} />
+      <PrivacyNote />
+
+      {tab === "main" && (
+        <>
+          <section className="app__panel">
+            <RecordingIndicator state={recorder.state} hotkey={hotkey} />
+
+            <div className="app__controls">
+              <button
+                type="button"
+                className={
+                  "btn btn--record" +
+                  (recorder.state === "recording" ? " btn--record-active" : "")
+                }
+                disabled={recorder.state === "processing"}
+                onClick={() => void recorder.toggle(mode)}
+              >
+                {buttonLabel}
+              </button>
+              {recorder.state === "recording" && (
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() => void recorder.cancel()}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </section>
+
+          <section className="app__panel">
+            <h2 className="app__panel-title">Output mode</h2>
+            <OutputModePicker value={mode} onChange={setMode} disabled={isBusy} />
+          </section>
+
+          <section className="app__panel">
+            <PreviewPane
+              result={recorder.result}
+              onCopy={handleCopy}
+              onClear={recorder.clearResult}
+            />
+          </section>
+        </>
+      )}
+
+      {tab === "settings" && (
+        <section className="app__panel">
+          {settings ? (
+            <SettingsPanel
+              settings={settings}
+              onSave={handleSaveSettings}
+              onClearTemp={handleClearTemp}
+              saving={savingSettings}
+            />
+          ) : (
+            <p>Loading settings…</p>
           )}
-        </div>
-      </section>
+        </section>
+      )}
 
-      <section className="app__panel">
-        <h2 className="app__panel-title">Output mode</h2>
-        <OutputModePicker value={mode} onChange={setMode} disabled={isBusy} />
-      </section>
-
-      <section className="app__panel">
-        <PreviewPane result={recorder.result} onCopy={handleCopy} />
-      </section>
+      {tab === "health" && (
+        <section className="app__panel">
+          <HealthPanel
+            checks={health}
+            loading={healthLoading}
+            onRun={handleRunHealth}
+          />
+        </section>
+      )}
 
       <footer className="app__footer">
-        <span>Hotkey: <kbd>{hotkey || "…"}</kbd></span>
+        <span>
+          Hotkey: <kbd>{hotkey || "…"}</kbd>
+        </span>
         <span>Temp audio is deleted after processing • No history • No cloud</span>
       </footer>
+
+      <Toast message={toast} onDone={() => setToast(null)} />
     </div>
   );
 }

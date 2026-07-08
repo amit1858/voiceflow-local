@@ -1,4 +1,4 @@
-//! `FoundryLocalProvider` — local LLM rewrite via Microsoft Foundry Local.
+//! `FoundryLocalRewriteProvider` — local LLM rewrite via Microsoft Foundry Local.
 //!
 //! Integration approach: a thin **CLI bridge + local REST** client.
 //!
@@ -7,12 +7,12 @@
 //!   (`foundry model download` / `foundry model load`).
 //! * Foundry Local serves an **OpenAI-compatible** REST API on a **dynamic**
 //!   localhost port, so we never hardcode it — we discover the endpoint by
-//!   parsing `foundry service status`.
-//! * Inference is a `POST {endpoint}/v1/chat/completions` with model
-//!   `phi-4-mini-instruct`.
+//!   parsing `foundry service status` (unless a manual override is configured
+//!   in Settings for debugging).
+//! * Inference is a `POST {endpoint}/v1/chat/completions` with the configured
+//!   model (default `phi-4-mini-instruct`).
 //!
-//! Every failure maps to a typed [`VfError`] (`FoundryUnavailable` /
-//! `RewriteFailed`); the app never panics if Foundry is missing.
+//! Every failure maps to a specific [`VfError`] so the UI can guide the user.
 
 use std::io::ErrorKind;
 use std::sync::Mutex;
@@ -25,21 +25,22 @@ use tokio::process::Command;
 use crate::errors::VfError;
 use crate::rewrite::{OutputMode, RewriteProvider, StyleRules};
 
-/// Default Foundry Local model id.
-const DEFAULT_MODEL: &str = "phi-4-mini-instruct";
-
 /// Local LLM rewrite provider backed by Foundry Local.
-pub struct FoundryLocalProvider {
+pub struct FoundryLocalRewriteProvider {
     model: String,
+    /// Optional manual endpoint override (skips dynamic port discovery).
+    endpoint_override: Option<String>,
     client: reqwest::Client,
-    /// Cached discovered endpoint (e.g. `http://127.0.0.1:5273`). Lazily filled.
+    /// Cached discovered endpoint. Lazily filled from `foundry service status`.
     endpoint: Mutex<Option<String>>,
 }
 
-impl FoundryLocalProvider {
-    pub fn new() -> Self {
-        FoundryLocalProvider {
-            model: DEFAULT_MODEL.to_string(),
+impl FoundryLocalRewriteProvider {
+    /// Create a provider for `model`, optionally forcing `endpoint_override`.
+    pub fn new(model: String, endpoint_override: Option<String>) -> Self {
+        FoundryLocalRewriteProvider {
+            model,
+            endpoint_override,
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
@@ -48,29 +49,38 @@ impl FoundryLocalProvider {
         }
     }
 
-    /// Ensure the service is up and the model is available, returning the
-    /// discovered REST endpoint. Results are cached after first success.
-    async fn ensure_ready(&self) -> Result<String, VfError> {
+    #[allow(dead_code)]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Ensure the service is up and return the REST endpoint. Honors the manual
+    /// override; otherwise discovers (and starts, if needed) the service.
+    pub async fn ensure_ready(&self) -> Result<String, VfError> {
+        if let Some(ep) = &self.endpoint_override {
+            if !ep.trim().is_empty() {
+                return Ok(ep.trim().trim_end_matches('/').to_string());
+            }
+        }
+
         if let Some(ep) = self.endpoint.lock().ok().and_then(|g| g.clone()) {
             return Ok(ep);
         }
 
-        // 1. Try to discover an already-running service.
+        // Try an already-running service first.
         let mut endpoint = self.discover_endpoint().await?;
 
-        // 2. If not running, start it and retry discovery.
+        // If not running, start it and retry discovery.
         if endpoint.is_none() {
             self.run_foundry(&["service", "start"]).await?;
             endpoint = self.discover_endpoint().await?;
         }
 
-        let endpoint = endpoint.ok_or_else(|| VfError::FoundryUnavailable {
-            detail: "Could not determine the Foundry Local endpoint from `foundry service status`."
-                .into(),
+        let endpoint = endpoint.ok_or_else(|| VfError::FoundryPortNotDiscovered {
+            detail: "no http(s) endpoint found in `foundry service status` output".into(),
         })?;
 
-        // 3. Best-effort ensure the model is downloaded and loaded. These are
-        //    idempotent; failures here surface as RewriteFailed at inference.
+        // Best-effort ensure the model is present and loaded (idempotent).
         let _ = self.run_foundry(&["model", "download", &self.model]).await;
         let _ = self.run_foundry(&["model", "load", &self.model]).await;
 
@@ -81,57 +91,81 @@ impl FoundryLocalProvider {
     }
 
     /// Run `foundry service status` and parse out the REST endpoint URL.
-    async fn discover_endpoint(&self) -> Result<Option<String>, VfError> {
+    pub async fn discover_endpoint(&self) -> Result<Option<String>, VfError> {
         let output = self.run_foundry(&["service", "status"]).await?;
         Ok(parse_endpoint(&output))
     }
 
+    /// Verify the `foundry` CLI is installed by running `foundry --version`.
+    pub async fn check_installed(&self) -> Result<String, VfError> {
+        self.run_foundry(&["--version"]).await
+    }
+
+    /// True if the configured model appears in `foundry model list`.
+    pub async fn model_available(&self) -> Result<bool, VfError> {
+        let list = self.run_foundry(&["model", "list"]).await?;
+        Ok(list.to_lowercase().contains(&self.model.to_lowercase()))
+    }
+
+    /// Fire a tiny chat completion to confirm end-to-end inference works.
+    pub async fn smoke_test(&self) -> Result<(), VfError> {
+        let endpoint = self.ensure_ready().await?;
+        let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+        let body = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "Reply with the single word: ok".into(),
+            }],
+            temperature: 0.0,
+            stream: false,
+        };
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(&url, e))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            Err(VfError::RewriteFailed {
+                detail: format!("smoke test returned {status}: {detail}"),
+            })
+        }
+    }
+
     /// Invoke the `foundry` CLI. Maps a missing executable to
-    /// [`VfError::FoundryUnavailable`] so the UI can guide installation.
+    /// [`VfError::FoundryNotInstalled`].
     async fn run_foundry(&self, args: &[&str]) -> Result<String, VfError> {
         let result = Command::new("foundry").args(args).output().await;
-
         match result {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                // `service status` returns useful text even on non-zero exit;
-                // return combined output and let callers parse/decide.
                 Ok(format!("{stdout}\n{stderr}"))
             }
-            Err(e) if e.kind() == ErrorKind::NotFound => Err(VfError::FoundryUnavailable {
-                detail: "The `foundry` CLI was not found on PATH.".into(),
-            }),
-            Err(e) => Err(VfError::FoundryUnavailable {
-                detail: format!("Failed to run `foundry {}`: {e}", args.join(" ")),
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(VfError::FoundryNotInstalled),
+            Err(e) => Err(VfError::FoundryServiceNotRunning {
+                detail: format!("failed to run `foundry {}`: {e}", args.join(" ")),
             }),
         }
     }
 
     fn build_messages(&self, text: &str, mode: OutputMode, style: &StyleRules) -> Vec<ChatMessage> {
-        let system = format!(
-            "{}\n\nTask: {}",
-            style.system_prompt(),
-            mode.instruction()
-        );
+        let system = format!("{}\n\nTask: {}", style.system_prompt(), mode.instruction());
         vec![
             ChatMessage { role: "system".into(), content: system },
-            ChatMessage {
-                role: "user".into(),
-                content: format!("Transcript:\n\n{text}"),
-            },
+            ChatMessage { role: "user".into(), content: format!("Transcript:\n\n{text}") },
         ]
     }
 }
 
-impl Default for FoundryLocalProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[async_trait]
-impl RewriteProvider for FoundryLocalProvider {
+impl RewriteProvider for FoundryLocalRewriteProvider {
     async fn rewrite(
         &self,
         text: &str,
@@ -154,13 +188,15 @@ impl RewriteProvider for FoundryLocalProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| VfError::RewriteFailed {
-                detail: format!("request to {url} failed: {e}"),
-            })?;
+            .map_err(|e| map_reqwest_error(&url, e))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let detail = resp.text().await.unwrap_or_default();
+            // A 404 for the model usually means it isn't loaded.
+            if status.as_u16() == 404 && detail.to_lowercase().contains("model") {
+                return Err(VfError::PhiNotInstalled { model: self.model.clone() });
+            }
             return Err(VfError::RewriteFailed {
                 detail: format!("Foundry returned {status}: {detail}"),
             });
@@ -187,6 +223,19 @@ impl RewriteProvider for FoundryLocalProvider {
     }
 }
 
+/// Map a reqwest error to the most specific [`VfError`].
+fn map_reqwest_error(url: &str, e: reqwest::Error) -> VfError {
+    if e.is_timeout() {
+        VfError::FoundryTimeout { detail: format!("request to {url} timed out") }
+    } else if e.is_connect() {
+        VfError::FoundryNoResponse {
+            detail: format!("could not connect to {url}: {e}"),
+        }
+    } else {
+        VfError::RewriteFailed { detail: format!("request to {url} failed: {e}") }
+    }
+}
+
 /// Parse a `http://host:port` endpoint out of arbitrary CLI text.
 ///
 /// Foundry's status output includes a line with the served endpoint; we scan
@@ -199,7 +248,6 @@ fn parse_endpoint(text: &str) -> Option<String> {
                 .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
                 .unwrap_or(rest.len());
             let mut url = rest[..end].trim_end_matches('/').to_string();
-            // Drop any trailing path (keep scheme://host:port only).
             if let Some(idx) = url[scheme.len()..].find('/') {
                 url.truncate(scheme.len() + idx);
             }
@@ -245,10 +293,7 @@ mod tests {
     #[test]
     fn parses_dynamic_port_endpoint() {
         let sample = "Model management service is running on http://127.0.0.1:5273/openai/status";
-        assert_eq!(
-            parse_endpoint(sample),
-            Some("http://127.0.0.1:5273".to_string())
-        );
+        assert_eq!(parse_endpoint(sample), Some("http://127.0.0.1:5273".to_string()));
     }
 
     #[test]

@@ -6,8 +6,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   isVfError,
+  type HealthCheck,
   type OutputMode,
   type PipelineResult,
+  type Settings,
   type VfError,
 } from "./types";
 
@@ -74,6 +76,42 @@ export async function getHotkey(): Promise<string> {
 export async function setHotkey(accelerator: string): Promise<string> {
   try {
     return await invoke<string>("set_hotkey", { accelerator });
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Read the persisted user settings. */
+export async function getSettings(): Promise<Settings> {
+  try {
+    return await invoke<Settings>("get_settings");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Persist user settings. Returns the saved settings. */
+export async function saveSettings(settings: Settings): Promise<Settings> {
+  try {
+    return await invoke<Settings>("save_settings", { settings });
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Run all provider/environment health checks. */
+export async function runHealthChecks(): Promise<HealthCheck[]> {
+  try {
+    return await invoke<HealthCheck[]>("run_health_checks");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Delete leftover `voiceflow-*.wav` temp files. Returns the count removed. */
+export async function clearTempFiles(): Promise<number> {
+  try {
+    return await invoke<number>("clear_temp_files");
   } catch (err) {
     throw toVfError(err);
   }

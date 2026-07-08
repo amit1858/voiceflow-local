@@ -1,4 +1,4 @@
-//! `WhisperCppProvider` — in-process transcription via whisper.cpp bindings.
+//! `LocalWhisperTranscriptionProvider` — in-process transcription via whisper.cpp bindings.
 //!
 //! The provider loads a local GGML model (e.g. `ggml-base.en.bin`) from the app
 //! data directory. If the model file is missing it returns
@@ -23,20 +23,26 @@ const MODEL_DOWNLOAD_HINT: &str = "Download a GGML English model (e.g. ggml-base
 https://huggingface.co/ggerganov/whisper.cpp/tree/main and place it at the path above.";
 
 /// Transcription provider backed by whisper.cpp.
-pub struct WhisperCppProvider {
+pub struct LocalWhisperTranscriptionProvider {
     model_path: PathBuf,
     language: String,
 }
 
-impl WhisperCppProvider {
+impl LocalWhisperTranscriptionProvider {
     /// Create a provider that will load the GGML model at `model_path`.
     pub fn new(model_path: PathBuf) -> Self {
-        WhisperCppProvider { model_path, language: "en".to_string() }
+        LocalWhisperTranscriptionProvider { model_path, language: "en".to_string() }
+    }
+
+    /// The configured model path (used by health checks).
+    #[allow(dead_code)]
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
     }
 
     /// Verify the model file exists, returning a precise [`VfError::ModelMissing`]
     /// otherwise. Called before any (potentially expensive) load attempt.
-    fn ensure_model_present(&self) -> Result<(), VfError> {
+    pub fn ensure_model_present(&self) -> Result<(), VfError> {
         if self.model_path.exists() {
             Ok(())
         } else {
@@ -49,7 +55,7 @@ impl WhisperCppProvider {
 }
 
 #[async_trait]
-impl TranscriptionProvider for WhisperCppProvider {
+impl TranscriptionProvider for LocalWhisperTranscriptionProvider {
     async fn transcribe(&self, wav: &Path) -> Result<String, VfError> {
         self.ensure_model_present()?;
 

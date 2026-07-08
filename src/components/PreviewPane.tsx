@@ -1,32 +1,49 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PipelineResult } from "../lib/types";
 
 interface Props {
   result: PipelineResult | null;
   onCopy: (text: string) => Promise<void> | void;
+  onClear: () => void;
 }
 
 /**
- * Preview of the pipeline output with a Copy button. Copy is the ONLY path
- * text reaches the clipboard — there is no auto-send. Optionally the raw
- * transcript can be revealed for comparison.
+ * Editable preview of the pipeline output with Copy and Clear buttons. The
+ * textarea is user-editable BEFORE copy — Copy is the only path text reaches
+ * the clipboard (no auto-send). Editing the text never mutates the underlying
+ * transcript; a new recording result resets the editable buffer.
  */
-export function PreviewPane({ result, onCopy }: Props) {
+export function PreviewPane({ result, onCopy, onClear }: Props) {
+  const [text, setText] = useState("");
   const [copied, setCopied] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+
+  // Reset the editable buffer whenever a new result arrives.
+  useEffect(() => {
+    setText(result?.output ?? "");
+    setShowRaw(false);
+  }, [result]);
 
   if (!result) {
     return (
       <div className="preview preview--empty">
-        <p>Your rewritten text will appear here after recording.</p>
+        <p>
+          Your rewritten text will appear here after recording. You can edit it
+          before copying.
+        </p>
       </div>
     );
   }
 
   const handleCopy = async () => {
-    await onCopy(result.output);
+    await onCopy(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const handleClear = () => {
+    setText("");
+    onClear();
   };
 
   const showRawToggle =
@@ -36,16 +53,27 @@ export function PreviewPane({ result, onCopy }: Props) {
     <div className="preview">
       <div className="preview__header">
         <h2 className="preview__title">Preview</h2>
-        <button type="button" className="btn btn--primary" onClick={handleCopy}>
-          {copied ? "Copied ✓" : "Copy"}
-        </button>
+        <div className="preview__actions">
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={handleCopy}
+            disabled={text.trim().length === 0}
+          >
+            {copied ? "Copied ✓" : "Copy"}
+          </button>
+          <button type="button" className="btn btn--ghost" onClick={handleClear}>
+            Clear
+          </button>
+        </div>
       </div>
 
       <textarea
         className="preview__text"
-        readOnly
-        value={result.output}
-        aria-label="Output text"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        aria-label="Output text (editable)"
+        spellCheck
       />
 
       {showRawToggle && (

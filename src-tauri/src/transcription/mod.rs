@@ -3,7 +3,7 @@
 //! All transcription goes through the [`TranscriptionProvider`] trait so that
 //! additional back-ends (cloud STT, other local engines) can be added later
 //! without touching the pipeline. The first implementation is
-//! [`whisper_cpp::WhisperCppProvider`].
+//! [`whisper_cpp::LocalWhisperTranscriptionProvider`].
 
 use std::path::Path;
 
@@ -11,6 +11,7 @@ use async_trait::async_trait;
 
 use crate::errors::VfError;
 
+pub mod mock;
 pub mod whisper_cpp;
 
 /// Turns a 16 kHz mono WAV file into text.

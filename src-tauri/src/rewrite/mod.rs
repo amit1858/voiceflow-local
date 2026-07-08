@@ -3,7 +3,7 @@
 //! Rewriting turns a raw transcript into a polished message in one of several
 //! [`OutputMode`]s. All rewriting is behind the [`RewriteProvider`] trait so
 //! cloud LLMs can be swapped in later. The first implementation is
-//! [`foundry_local::FoundryLocalProvider`] (Microsoft Foundry Local, Phi-4-mini).
+//! [`foundry_local::FoundryLocalRewriteProvider`] (Microsoft Foundry Local, Phi-4-mini).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::errors::VfError;
 
 pub mod foundry_local;
+pub mod mock;
 pub mod style;
 
 pub use style::StyleRules;
@@ -54,25 +55,27 @@ impl OutputMode {
     pub fn instruction(self) -> &'static str {
         match self {
             OutputMode::Raw => {
-                "Return the text unchanged except for light cleanup of filler words."
+                "Fix punctuation and obvious speech-to-text errors only. Do NOT add, remove, or \
+change meaning. Keep the speaker's own words and order; just make it read cleanly."
             }
             OutputMode::Teams => {
-                "Rewrite the transcript as a short, friendly Microsoft Teams chat message. \
-Keep it to a few sentences, conversational but professional. No greeting or sign-off."
+                "Rewrite as a short, crisp Microsoft Teams chat message: conversational but \
+professional. Usually open with a brief greeting and end with a clear ask or next step. \
+Keep it to a few sentences."
             }
             OutputMode::Email => {
-                "Rewrite the transcript as a clear, professional email. Include a brief greeting, \
-well-structured body paragraphs, and a short sign-off. Do not invent a specific recipient \
-name or sender name; use neutral placeholders only if strictly necessary."
+                "Rewrite as a professional email with: a brief greeting, one or two lines of \
+context, the main point, a clear ask or next step, and a short closing. Do not invent a \
+specific recipient or sender name; use neutral placeholders only if strictly necessary."
             }
             OutputMode::ProductNote => {
-                "Rewrite the transcript as a concise product/engineering note. Lead with the key \
-point, then supporting detail as tight bullet points where helpful. Objective and precise."
+                "Rewrite as structured product/engineering notes. Use short headings and bullet \
+points where they help. Keep it practical and precise; lead with the key point."
             }
             OutputMode::ExecutiveSummary => {
-                "Rewrite the transcript as a tight executive summary for senior leadership. \
-Start with the single most important takeaway, then 2-4 crisp supporting points. \
-Avoid jargon; focus on impact and decisions."
+                "Rewrite as an executive summary for senior leadership, in this order: context, \
+the key point, why it matters, any risk or decision needed, and the next step. Crisp and \
+free of jargon."
             }
         }
     }

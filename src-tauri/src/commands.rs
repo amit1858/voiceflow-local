@@ -10,8 +10,10 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use crate::audio::recorder::ActiveRecording;
 use crate::audio::temp::TempWav;
 use crate::errors::VfError;
+use crate::health::{self, HealthCheck};
 use crate::pipeline::{run_pipeline, PipelineResult};
 use crate::rewrite::OutputMode;
+use crate::settings::Settings;
 use crate::state::{AppState, RecordingSession};
 
 /// Start capturing microphone audio to a fresh temp WAV.
@@ -57,9 +59,9 @@ pub async fn stop_and_process(
     // the WAV. We also call `cleanup()` explicitly on the success path.
     let wav_path = active.stop()?;
 
-    // Clone the shared providers so we don't hold the `State` borrow across await.
-    let transcriber = state.transcriber.clone();
-    let rewriter = state.rewriter.clone();
+    // Build providers from the current settings (mock-first by default).
+    let transcriber = state.transcriber();
+    let rewriter = state.rewriter();
     let style = state.style.clone();
 
     let result = run_pipeline(&wav_path, mode, &*transcriber, &*rewriter, &style).await;
@@ -130,6 +132,89 @@ pub fn set_hotkey(
         .lock()
         .map_err(|_| VfError::internal("hotkey state poisoned"))?;
     *guard = accelerator.clone();
+    drop(guard);
+
+    // Mirror the change into settings and persist it.
+    if let Ok(mut s) = state.settings.lock() {
+        s.hotkey = accelerator.clone();
+        let _ = s.save(&state.app_data_dir);
+    }
 
     Ok(accelerator)
+}
+
+/// Return the current user settings.
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, VfError> {
+    Ok(state.current_settings())
+}
+
+/// Persist new settings. Re-registers the global hotkey if it changed.
+#[tauri::command]
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<Settings, VfError> {
+    settings.save(&state.app_data_dir)?;
+
+    // Determine the previous hotkey so we can re-register if it changed.
+    let previous = state.hotkey.lock().ok().map(|h| h.clone());
+
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| VfError::internal("settings state poisoned"))?;
+        *guard = settings.clone();
+    }
+
+    if previous.as_deref() != Some(settings.hotkey.as_str()) {
+        let shortcuts = app.global_shortcut();
+        if let Some(prev) = previous {
+            let _ = shortcuts.unregister(prev.as_str());
+        }
+        shortcuts.register(settings.hotkey.as_str()).map_err(|e| {
+            VfError::internal(format!(
+                "Could not register hotkey '{}': {e}. Use a form like 'Ctrl+Shift+Space'.",
+                settings.hotkey
+            ))
+        })?;
+        if let Ok(mut h) = state.hotkey.lock() {
+            *h = settings.hotkey.clone();
+        }
+    }
+
+    Ok(settings)
+}
+
+/// Run all provider/environment health checks against the current settings.
+#[tauri::command]
+pub async fn run_health_checks(
+    state: State<'_, AppState>,
+) -> Result<Vec<HealthCheck>, VfError> {
+    let settings = state.current_settings();
+    Ok(health::run_health_checks(&settings).await)
+}
+
+/// Delete any leftover `voiceflow-*.wav` temp files. Returns how many were
+/// removed. Never a hard error unless the temp dir itself is unreadable.
+#[tauri::command]
+pub fn clear_temp_files() -> Result<usize, VfError> {
+    let dir = std::env::temp_dir();
+    let entries = std::fs::read_dir(&dir).map_err(|e| VfError::TempCleanupFailed {
+        detail: format!("could not read {}: {e}", dir.display()),
+    })?;
+
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("voiceflow-") && name.ends_with(".wav") {
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
 }
