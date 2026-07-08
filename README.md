@@ -8,6 +8,11 @@ React + TypeScript** with a **Rust** backend.
 No cloud. No API keys. No transcript history. No database. Nothing is sent
 anywhere, and the temporary audio file is deleted after every use.
 
+> **Mock-first:** a fresh checkout runs the whole record → transcribe → rewrite
+> → preview → copy workflow **with zero local models installed**, using
+> deterministic mock providers. Install Whisper and Foundry Local later and flip
+> a setting to switch to real local inference.
+
 ---
 
 ## What it is
@@ -18,60 +23,112 @@ VoiceFlow Local turns spoken words into clean, ready-to-paste text:
    recording. A visible indicator shows you're live.
 2. Press it again to stop.
 3. The app captures your mic to a temporary 16 kHz mono WAV in the OS temp dir.
-4. It **transcribes locally** with whisper.cpp (via `whisper-rs`).
-5. It **rewrites locally** into your selected output mode using **Microsoft
-   Foundry Local** running **`phi-4-mini-instruct`**.
-6. You see a **preview**. Click **Copy** to put the text on your clipboard.
-7. The temporary WAV is deleted.
+4. It **transcribes locally** (mock provider by default; whisper.cpp via
+   `whisper-rs` when enabled).
+5. It **rewrites locally** into your selected output mode (mock provider by
+   default; **Microsoft Foundry Local** running **`phi-4-mini-instruct`** when
+   enabled).
+6. You see an **editable preview**. Edit if you like, then click **Copy**
+   (or enable auto-copy). The temporary WAV is deleted.
 
 ### Output modes
 
-| Mode | Description |
+| Mode | Behavior |
 | --- | --- |
-| **Raw transcript** | Cleaned transcript, bypasses the rewrite model (style filter still applies). |
-| **Teams message** | Short, friendly chat message. |
-| **Email** | Structured email with greeting and sign-off. |
-| **Product note** | Concise product / engineering note. |
-| **Executive summary** | Tight summary aimed at leadership. |
+| **Raw transcript** | Fix punctuation + obvious speech errors only; add no new meaning. Bypasses the rewrite model (style filter still applies). |
+| **Teams message** | Short, crisp, conversational, professional — usually a greeting + a clear ask/next step. |
+| **Email** | Greeting, context, main point, ask/next step, closing. |
+| **Product note** | Structured notes with headings where helpful; practical. |
+| **Executive summary** | Context, key point, why it matters, risk/decision, next step. |
 
 ### Writing style
 
 Every output — including the raw transcript — is passed through a central style
-filter: simple, polished English; crisp and collaborative; and the word
-"kindly" is never used (it is stripped/replaced). The style is also injected
-into the rewrite model's system prompt.
+filter and the style is also injected into the rewrite model's system prompt:
+
+- Simple, polished English; crisp and practical.
+- Warm but professional; collaborative.
+- **Never** the word "kindly" (stripped/replaced by a post-filter *and*
+  forbidden in the prompt).
+- Avoid overly formal or escalatory tone unless explicitly requested.
+- Pastes cleanly into Teams, Outlook, OneNote, a PRD, or leadership notes.
+
+---
+
+## Mock mode vs local mode
+
+Both providers are selected independently in **Settings**, and both default to
+**Mock**.
+
+| | Mock (default) | Local |
+| --- | --- | --- |
+| **Transcription** | `MockTranscriptionProvider` — returns a deterministic sample transcript. No model required. | `LocalWhisperTranscriptionProvider` — whisper.cpp via `whisper-rs`, loads a local GGML model. |
+| **Rewrite** | `MockRewriteProvider` — deterministic, applies mode formatting + style rules. No model required. | `FoundryLocalRewriteProvider` — Foundry Local + `phi-4-mini-instruct` over an OpenAI-compatible REST API. |
+
+Mock mode exists so the full UI and workflow can be validated end-to-end before
+any models are installed. Switch each provider to its local implementation in
+**Settings** once you've set the models up (see below), and use the **Health**
+tab to confirm everything is ready.
 
 ---
 
 ## Architecture
 
-All provider logic lives in Rust behind traits, so cloud providers can be added
-later without touching the UI or pipeline:
+All provider logic lives in Rust behind async traits, so cloud providers can be
+added later without touching the UI or pipeline:
 
-- `TranscriptionProvider` → first impl `WhisperCppProvider` (`whisper-rs`).
-- `RewriteProvider` → first impl `FoundryLocalProvider` (Foundry Local CLI
-  bridge + OpenAI-compatible REST on a **dynamic** localhost port, discovered by
-  parsing `foundry service status` — never hardcoded).
+- `TranscriptionProvider` → `MockTranscriptionProvider`,
+  `LocalWhisperTranscriptionProvider` (`whisper-rs`).
+- `RewriteProvider` → `MockRewriteProvider`, `FoundryLocalRewriteProvider`
+  (Foundry Local CLI bridge + OpenAI-compatible REST on a **dynamic** localhost
+  port, discovered by parsing `foundry service status` — never hardcoded).
+
+Providers are built **per request** from the current settings, so switching in
+the UI takes effect immediately.
 
 ```
 src/                     React + TypeScript frontend
-  components/            RecordingIndicator, OutputModePicker, PreviewPane, ErrorBanner
+  components/            RecordingIndicator, OutputModePicker, PreviewPane (editable),
+                         ErrorBanner, SettingsPanel, HealthPanel, PrivacyNote, Toast
   hooks/                 useRecorder, useHotkeyStatus
   lib/                   ipc.ts (typed invoke wrappers), types.ts
 src-tauri/               Rust backend
   src/
     commands.rs          Tauri command handlers (IPC surface)
-    state.rs             Shared app state + providers
+    state.rs             Shared app state + per-request provider factories
+    settings.rs          Settings persistence + provider selection (mock-first)
+    health.rs            Typed health checks (mic, temp, whisper, foundry)
     errors.rs            VfError enum → friendly UI messages
     pipeline.rs          transcribe → rewrite → style filter
     audio/               recorder.rs (cpal), wav.rs (hound), temp.rs (RAII cleanup)
-    transcription/       mod.rs (trait), whisper_cpp.rs
-    rewrite/             mod.rs (trait + OutputMode), foundry_local.rs, style.rs
+    transcription/       mod.rs (trait), mock.rs, whisper_cpp.rs
+    rewrite/             mod.rs (trait + OutputMode), mock.rs, foundry_local.rs, style.rs
+scripts/                 setup-local-models.ps1, check-local-models.ps1
 ```
 
 ---
 
-## Setup
+## Quick start (mock mode — zero setup)
+
+```powershell
+npm install
+npm run tauri dev
+```
+
+That's it. Both providers default to Mock, so you can record, process, edit the
+preview, and copy without installing any models. (Building the desktop app still
+needs the Tauri/Rust prerequisites below; native whisper is only compiled when
+you enable the `whisper` feature.)
+
+To type-check / build just the frontend:
+
+```powershell
+npm run build
+```
+
+---
+
+## Setup for local mode
 
 ### 1. Prerequisites
 
@@ -82,27 +139,21 @@ src-tauri/               Rust backend
   - **Microsoft Visual Studio C++ Build Tools** (the "Desktop development with
     C++" workload), which provides the MSVC compiler and linker.
   - **WebView2** runtime (preinstalled on Windows 11; installable on Windows 10).
-- **CMake** and a **C/C++ compiler** — required to build the bundled
-  whisper.cpp used by `whisper-rs`. Install CMake from
-  <https://cmake.org/download/> (or the Visual Studio "C++ CMake tools"
-  component) and make sure `cmake` is on your `PATH`.
+- **CMake** and a **C/C++ compiler** — required only to build the bundled
+  whisper.cpp used by `whisper-rs` (i.e. the `whisper` Cargo feature). Install
+  CMake from <https://cmake.org/download/> (or the Visual Studio "C++ CMake
+  tools" component) and make sure `cmake` is on your `PATH`.
 
 > **Build note:** the default Cargo features compile whisper.cpp from source,
-> which needs CMake + a C/C++ toolchain. If you only want to type-check the Rust
-> without building native whisper, use `cargo check --no-default-features`
-> (the `WhisperCppProvider` then returns a typed error at runtime instead of
-> transcribing).
+> which needs CMake + a C/C++ toolchain. To type-check the Rust without building
+> native whisper, use `cargo check --no-default-features`. In that build the
+> local Whisper provider is unavailable and health reports it as skipped —
+> mock transcription still works.
 
 ### 2. Install Microsoft Foundry Local
 
 ```powershell
 winget install Microsoft.FoundryLocal
-```
-
-Then start the service and pull the model (the app also attempts this
-automatically, but doing it once up front is faster):
-
-```powershell
 foundry service start
 foundry model download phi-4-mini-instruct
 foundry model load phi-4-mini-instruct
@@ -110,14 +161,15 @@ foundry model load phi-4-mini-instruct
 
 Foundry Local serves an OpenAI-compatible API on a dynamically-assigned
 localhost port. VoiceFlow discovers it by parsing `foundry service status`, so
-you never need to configure a port.
+you never configure a port. (You can set a manual endpoint override in Settings
+for debugging.)
 
 ### 3. Get the Whisper model
 
 Download a GGML English model — **`ggml-base.en.bin`** is a good default — from
 the whisper.cpp model repository:
 
-<https://huggingface.co/ggerganov/whisper.cpp/tree/main>
+<https://huggingface.co/ggerganov/whisper.cpp>
 
 Place it in the app's data directory under `models/`:
 
@@ -126,34 +178,63 @@ Place it in the app's data directory under `models/`:
 ```
 
 If the file is missing, the app does **not** crash — it shows an error banner
-with the exact expected path and this download hint.
+(and a failing health check) with the exact expected path and a download hint.
 
-### 4. Run in development
-
-```powershell
-npm install
-npm run tauri dev
-```
-
-To type-check / build just the frontend:
+### 4. Helper scripts
 
 ```powershell
-npm run build
+# Guided setup: checks prereqs, prepares Foundry + Phi, checks the model folder.
+./scripts/setup-local-models.ps1
+
+# Validate readiness and print PASS/FAIL (mirrors the in-app Health tab).
+./scripts/check-local-models.ps1
 ```
+
+Neither script downloads Whisper weights automatically, and neither commits
+models or secrets.
+
+### 5. Switch to local providers
+
+Open **Settings**, set **Transcription provider** to *Local Whisper* and/or
+**Rewrite provider** to *Foundry Local*, save, then open the **Health** tab and
+run the checks.
+
+---
+
+## Health checks
+
+The **Health** tab (and `run_health_checks` command) reports typed pass/fail for:
+
+- Temp audio folder writable
+- Microphone available
+- Whisper model exists (and loads, in `whisper`-enabled builds)
+- Foundry Local installed
+- Foundry service running
+- Foundry dynamic port discovered
+- Phi model available
+- Foundry chat-completion smoke test
+
+Checks that don't apply to your current settings (e.g. Foundry checks while in
+mock mode) are reported as **skipped**.
 
 ---
 
 ## Privacy model
 
-- **All local.** Transcription (whisper.cpp) and rewriting (Foundry Local) run
-  entirely on your machine.
+- **All local.** Transcription and rewriting run entirely on your machine.
 - **No cloud, no API keys** in v1.
-- **No database, no history.** Transcripts are never persisted.
+- **No database, no history.** Transcripts live in memory only and are never
+  persisted. Only your preferences are stored (in `settings.json`).
 - **Temporary audio is deleted** after processing — on success *and* on error
   paths — via an RAII guard (`Drop`) plus explicit cleanup. The WAV lives only
   in the OS temp dir as `voiceflow-<uuid>.wav` for the duration of processing.
+  Settings → **Clear temp files** removes any stragglers.
 - **No telemetry.**
-- **No auto-send.** Text only reaches the clipboard when you click **Copy**.
+- **No auto-send.** Text reaches the clipboard only when you click **Copy** (or
+  when you explicitly enable auto-copy, which is **off** by default).
+- **Enterprise note:** for confidential or regulated work, only use approved
+  enterprise endpoints and follow your organization's data-handling policies.
+  The app shows this reminder in-product too.
 
 ---
 
@@ -162,11 +243,11 @@ npm run build
 - **Windows 10 or 11** (Windows-first; the code is portable but only tested on
   Windows).
 - A working **microphone** (and microphone permission for the app).
-- Enough **disk and RAM** for local models:
+- Enough **disk and RAM** for local models (only when using local providers):
   - Whisper `base.en` ≈ 140 MB on disk; larger models need more RAM.
   - `phi-4-mini-instruct` via Foundry Local needs several GB of RAM/VRAM
     depending on the runtime.
-- MSVC Build Tools + CMake to build from source (see Setup).
+- MSVC Build Tools + CMake to build native whisper from source (see Setup).
 
 ---
 
@@ -175,17 +256,19 @@ npm run build
 - **No transcript history** and no database.
 - **No cloud providers** — local only (the provider traits make adding them
   later straightforward).
-- **No auto-send** — copy-to-clipboard only.
+- **No auto-send** — copy-to-clipboard only (auto-copy is opt-in).
+- **No always-on listening** — records only on explicit start, always with a
+  visible indicator.
 - **English Whisper model** by default (`ggml-base.en.bin`).
-- **Requires Foundry Local installed** and the `phi-4-mini-instruct` model for
-  all non-Raw output modes.
+- **Requires Foundry Local + `phi-4-mini-instruct`** for non-Raw modes when the
+  rewrite provider is set to Foundry Local. Mock rewrite works with no setup.
 
 ---
 
 ## Development notes
 
-- Rust unit tests cover the style post-filter and the Foundry endpoint parser:
-  `cargo test --no-default-features`.
+- Rust unit tests cover the mock providers, the style post-filter, the Foundry
+  endpoint parser, and mock error mapping: `cargo test --no-default-features`.
 - The frontend is type-checked by `tsc` as part of `npm run build`.
 - Building the full app (`npm run tauri dev` / `tauri build`) requires the
-  native prerequisites above, including CMake for whisper.cpp.
+  native prerequisites above; CMake is only needed for the `whisper` feature.
