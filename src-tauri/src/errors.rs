@@ -191,3 +191,56 @@ impl Serialize for VfError {
 
 #[allow(dead_code)]
 pub type VfResult<T> = Result<T, VfError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codes_are_stable() {
+        assert_eq!(VfError::NoMicrophone.code(), "NoMicrophone");
+        assert_eq!(VfError::FoundryNotInstalled.code(), "FoundryNotInstalled");
+        assert_eq!(
+            VfError::PhiNotInstalled { model: "phi-4-mini-instruct".into() }.code(),
+            "PhiNotInstalled"
+        );
+        assert_eq!(
+            VfError::InvalidAudioFile { detail: "x".into() }.code(),
+            "InvalidAudioFile"
+        );
+    }
+
+    #[test]
+    fn model_missing_hint_includes_path() {
+        let e = VfError::ModelMissing {
+            expected_path: "C:/models/ggml-base.en.bin".into(),
+            hint: "download it".into(),
+        };
+        let hint = e.hint().unwrap();
+        assert!(hint.contains("C:/models/ggml-base.en.bin"));
+        assert!(hint.contains("download it"));
+    }
+
+    #[test]
+    fn foundry_not_installed_hint_mentions_winget() {
+        let hint = VfError::FoundryNotInstalled.hint().unwrap();
+        assert!(hint.to_lowercase().contains("winget"));
+    }
+
+    #[test]
+    fn serializes_to_code_message_hint() {
+        let e = VfError::PhiNotInstalled { model: "phi-4-mini-instruct".into() };
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["code"], "PhiNotInstalled");
+        assert!(json["message"].is_string());
+        assert!(json["hint"].is_string());
+    }
+
+    #[test]
+    fn hint_is_null_when_absent() {
+        let e = VfError::NotRecording;
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["code"], "NotRecording");
+        assert!(json["hint"].is_null());
+    }
+}

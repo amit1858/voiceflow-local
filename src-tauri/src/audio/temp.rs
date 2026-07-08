@@ -40,3 +40,46 @@ impl Drop for TempWav {
         self.cleanup();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_dummy(path: &Path) {
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(b"RIFFdummy").unwrap();
+    }
+
+    #[test]
+    fn path_is_in_temp_dir_and_named() {
+        let t = TempWav::new();
+        let name = t.path().file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("voiceflow-"));
+        assert!(name.ends_with(".wav"));
+        assert!(t.path().starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn explicit_cleanup_removes_file() {
+        let t = TempWav::new();
+        write_dummy(t.path());
+        assert!(t.path().exists());
+        t.cleanup();
+        assert!(!t.path().exists());
+        // Idempotent: second cleanup is a no-op.
+        t.cleanup();
+    }
+
+    #[test]
+    fn drop_removes_file() {
+        let path;
+        {
+            let t = TempWav::new();
+            path = t.path().to_path_buf();
+            write_dummy(&path);
+            assert!(path.exists());
+        } // t dropped here
+        assert!(!path.exists(), "Drop must delete the temp WAV");
+    }
+}

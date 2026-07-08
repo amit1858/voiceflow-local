@@ -289,6 +289,8 @@ struct ChatChoice {
 #[cfg(test)]
 mod tests {
     use super::parse_endpoint;
+    use super::FoundryLocalRewriteProvider;
+    use crate::rewrite::{OutputMode, StyleRules};
 
     #[test]
     fn parses_dynamic_port_endpoint() {
@@ -299,5 +301,39 @@ mod tests {
     #[test]
     fn returns_none_when_absent() {
         assert_eq!(parse_endpoint("service is not running"), None);
+    }
+
+    #[test]
+    fn build_messages_injects_style_and_mode_instruction() {
+        let provider =
+            FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
+        let style = StyleRules::default();
+        let msgs = provider.build_messages("we should ship friday", OutputMode::Teams, &style);
+
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].role, "user");
+
+        // System prompt carries the style rules (incl. the "kindly" ban) and the
+        // mode-specific instruction.
+        assert!(msgs[0].content.to_lowercase().contains("kindly"));
+        assert!(msgs[0].content.contains(OutputMode::Teams.instruction()));
+
+        // User message carries the transcript.
+        assert!(msgs[1].content.contains("we should ship friday"));
+    }
+
+    #[test]
+    fn each_mode_builds_a_distinct_instruction() {
+        let provider =
+            FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
+        let style = StyleRules::default();
+        let email = provider.build_messages("x", OutputMode::Email, &style)[0]
+            .content
+            .clone();
+        let exec = provider.build_messages("x", OutputMode::ExecutiveSummary, &style)[0]
+            .content
+            .clone();
+        assert_ne!(email, exec);
     }
 }

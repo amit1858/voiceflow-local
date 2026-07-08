@@ -92,3 +92,48 @@ pub trait RewriteProvider: Send + Sync {
         style: &StyleRules,
     ) -> Result<String, VfError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_raw_bypasses_rewrite() {
+        assert!(OutputMode::Raw.is_raw());
+        for m in [
+            OutputMode::Teams,
+            OutputMode::Email,
+            OutputMode::ProductNote,
+            OutputMode::ExecutiveSummary,
+        ] {
+            assert!(!m.is_raw());
+        }
+    }
+
+    #[test]
+    fn instructions_are_mode_specific_and_nonempty() {
+        let all = [
+            OutputMode::Raw,
+            OutputMode::Teams,
+            OutputMode::Email,
+            OutputMode::ProductNote,
+            OutputMode::ExecutiveSummary,
+        ];
+        for m in all {
+            assert!(!m.instruction().is_empty());
+        }
+        // Each instruction is distinct.
+        let mut seen = std::collections::HashSet::new();
+        for m in all {
+            assert!(seen.insert(m.instruction()), "duplicate instruction for {m:?}");
+        }
+    }
+
+    #[test]
+    fn output_mode_serde_roundtrip_snake_case() {
+        let json = serde_json::to_string(&OutputMode::ProductNote).unwrap();
+        assert_eq!(json, "\"product_note\"");
+        let back: OutputMode = serde_json::from_str("\"executive_summary\"").unwrap();
+        assert_eq!(back, OutputMode::ExecutiveSummary);
+    }
+}
