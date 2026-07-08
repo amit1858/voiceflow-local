@@ -179,7 +179,14 @@ export default function App() {
       {tab === "main" && (
         <>
           <section className="app__panel">
-            <RecordingIndicator state={recorder.state} hotkey={hotkey} />
+            <RecordingIndicator
+              state={recorder.state}
+              hotkey={hotkey}
+              localModels={
+                settings?.transcription_provider === "local_whisper" ||
+                settings?.rewrite_provider === "foundry_local"
+              }
+            />
 
             <div className="app__controls">
               <button
