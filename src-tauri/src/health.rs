@@ -145,18 +145,18 @@ fn check_whisper_load(settings: &Settings, active: bool) -> HealthCheck {
     }
 
     let provider = LocalWhisperTranscriptionProvider::new(settings.whisper_model_path.clone().into());
-    match provider.ensure_model_present() {
+    match provider.validate_model() {
         Ok(()) => HealthCheck::new(
             "whisper_model_loads",
             "Whisper model loads",
             HealthStatus::Pass,
-            "Model file is present and will be loaded on first use.",
+            "Model file is present and looks valid; it will be loaded on first use.",
         ),
         Err(e) => HealthCheck::new(
             "whisper_model_loads",
             "Whisper model loads",
             HealthStatus::Fail,
-            e.to_string(),
+            e.hint().unwrap_or_else(|| e.to_string()),
         ),
     }
 }
