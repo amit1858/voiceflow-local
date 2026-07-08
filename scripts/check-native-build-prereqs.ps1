@@ -4,7 +4,7 @@
     `whisper` feature (native whisper.cpp compilation). Prints PASS/FAIL.
 
 .DESCRIPTION
-    Building with the default features compiles whisper.cpp from C/C++ via
+    Building with the `whisper` feature compiles whisper.cpp from C/C++ via
     whisper-rs -> whisper-rs-sys, which needs, in addition to Rust + Node:
 
       * CMake            - configures/builds the native whisper.cpp static lib.
@@ -13,11 +13,12 @@
       * libclang         - bindgen parses the C headers to generate Rust FFI
                            bindings; it needs libclang.dll on LIBCLANG_PATH or
                            on PATH (ships with LLVM or the VS "C++ Clang tools"
-                           component).
+                           component). Use a STABLE LLVM (17.x/18.x); a very new
+                           libclang (20+/trunk) mis-parses whisper.cpp and the
+                           build fails with an E0080 whisper_full_params error.
 
-    Mock mode needs NONE of this: build with `--no-default-features` to skip
-    native whisper entirely. This script only matters when you want real local
-    transcription.
+    Mock mode needs NONE of this: it is the default build. This script only
+    matters when you want real local transcription (`--features whisper`).
 
     Read-only. Never prints or requires secrets.
 
@@ -102,18 +103,43 @@ if ($found) {
     if (-not $env:LIBCLANG_PATH) {
         Info "Tip: set LIBCLANG_PATH to the folder above if bindgen can't find it."
     }
+    # Version guard: whisper-rs-sys 0.13's bindgen mis-parses whisper.cpp headers
+    # with very new libclang (LLVM 20+/trunk), failing with an E0080 layout error
+    # on whisper_full_params. Warn so users pick a stable LLVM (17.x/18.x).
+    $clangExe = Join-Path (Split-Path $found -Parent) "clang.exe"
+    $verText = $null; $major = $null
+    if (Test-Path $clangExe) {
+        $verLine = (& $clangExe --version 2>$null | Select-Object -First 1)
+        if ($verLine -match "clang version (\d+)\.") { $major = [int]$Matches[1]; $verText = $verLine }
+    }
+    if (-not $major) {
+        $pv = (Get-Item $found).VersionInfo.ProductVersion
+        if ($pv -match "^(\d+)\.") { $major = [int]$Matches[1]; $verText = "libclang $pv" }
+    }
+    if ($major) {
+        if ($major -ge 19) {
+            Warn "libclang is $verText (major $major). This is likely TOO NEW for"
+            Warn "whisper-rs-sys 0.13 and can fail with 'E0080 ... whisper_full_params'."
+            Warn "Install a STABLE LLVM 17.x/18.x and point LIBCLANG_PATH at it."
+        } else {
+            Pass "libclang version OK ($verText)"
+        }
+    } else {
+        Info "Could not determine libclang version; prefer LLVM 17.x/18.x if the build hits an E0080 whisper_full_params error."
+    }
 } else {
-    Fail "libclang.dll not found. Install LLVM ('winget install LLVM.LLVM') or the VS 'C++ Clang tools for Windows' component, then set LIBCLANG_PATH."
+    Fail "libclang.dll not found. Install a STABLE LLVM 17.x/18.x ('winget install LLVM.LLVM --version 18.1.8') or the VS 'C++ Clang tools for Windows' component, then set LIBCLANG_PATH."
 }
 
 Head "Summary"
 if ($script:warnings -gt 0) { Write-Host "  $script:warnings warning(s)." -ForegroundColor Yellow }
 if ($script:failures -eq 0) {
     Write-Host "  Native-build prerequisites look good." -ForegroundColor Green
-    Write-Host "  Build with:  cargo build   (from src-tauri, in a VC dev shell)" -ForegroundColor Green
+    Write-Host "  Build with:  cargo build --features whisper   (from src-tauri, in a VC dev shell)" -ForegroundColor Green
+    Write-Host "  Or:          npm run tauri:build:whisper" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "  $script:failures prerequisite(s) missing." -ForegroundColor Red
-    Write-Host "  You can still run MOCK mode now: build with --no-default-features." -ForegroundColor Yellow
+    Write-Host "  You can still run MOCK mode now (the default): cargo build / npm run tauri:dev." -ForegroundColor Yellow
     exit 1
 }
