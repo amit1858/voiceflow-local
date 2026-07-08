@@ -1,0 +1,37 @@
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri backend
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Logs & OS cruft
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Local models — never commit model weights
+*.bin
+*.gguf
+*.ggml
+models/
+whisper-models/
+src-tauri/models/
+
+# Local runtime / temp / config
+voiceflow-*.wav
+settings.json
+*.local.json
+.env
+.env.*
+!.env.example
+
