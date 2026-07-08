@@ -143,6 +143,16 @@ npm run build
   whisper.cpp used by `whisper-rs` (i.e. the `whisper` Cargo feature). Install
   CMake from <https://cmake.org/download/> (or the Visual Studio "C++ CMake
   tools" component) and make sure `cmake` is on your `PATH`.
+- **libclang** — required by `bindgen` (used by `whisper-rs-sys`) to generate the
+  whisper.cpp FFI bindings. Install LLVM from <https://releases.llvm.org/> (or the
+  Visual Studio **"C++ Clang tools for Windows"** component) and, if it isn't
+  auto-detected, point `LIBCLANG_PATH` at the folder containing `libclang.dll`.
+
+Run the preflight script to check all of the above at once:
+
+```powershell
+./scripts/check-native-build-prereqs.ps1
+```
 
 > **Build note:** the default Cargo features compile whisper.cpp from source,
 > which needs CMake + a C/C++ toolchain. To type-check the Rust without building
@@ -272,3 +282,55 @@ mock mode) are reported as **skipped**.
 - The frontend is type-checked by `tsc` as part of `npm run build`.
 - Building the full app (`npm run tauri dev` / `tauri build`) requires the
   native prerequisites above; CMake is only needed for the `whisper` feature.
+
+---
+
+## Native build & packaging (real local models)
+
+The default Cargo features compile whisper.cpp from source and link it into the
+app, enabling the **Local Whisper** provider. This has been validated end to end:
+
+- `cargo check` / `cargo test` pass with the default `whisper` feature (whisper.cpp
+  compiles and links; all unit tests green).
+- A real transcription smoke test loads a GGML model and transcribes a known clip
+  (see the ignored `smoke` test in `src-tauri/src/transcription/whisper_cpp.rs`,
+  driven by the `WHISPER_SMOKE_MODEL` / `WHISPER_SMOKE_WAV` env vars).
+- `tauri build --no-bundle` produces an optimized release binary
+  (`voiceflow-local.exe`).
+
+### Build the release binary
+
+```powershell
+# Ensure native prereqs first:
+./scripts/check-native-build-prereqs.ps1
+
+# Type-check + compile the optimized binary (no installer):
+npm run tauri build -- --no-bundle
+```
+
+### Build a Windows installer
+
+`tauri build` produces **NSIS** and **MSI** installers (configured in
+`src-tauri/tauri.conf.json` under `bundle.targets`). WebView2 is delivered via the
+`downloadBootstrapper` install mode, so the installer stays small and fetches the
+runtime on first launch if it's missing.
+
+```powershell
+npm run tauri build
+# Installers are written to:
+#   src-tauri/target/release/bundle/nsis/*.exe
+#   src-tauri/target/release/bundle/msi/*.msi
+```
+
+> Installer generation should be run on a native **x64 Windows** host. Code signing
+> is not configured (unsigned installers trigger SmartScreen). The bundled icons are
+> placeholders — replace `src-tauri/icons/*` before a public release.
+
+### Foundry rewrite smoke test
+
+With Foundry Local installed and running, validate the Phi rewrite path per output
+mode (mirrors the in-app health check and the no-"kindly" post-filter):
+
+```powershell
+./scripts/smoke-test-foundry.ps1
+```
