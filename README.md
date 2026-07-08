@@ -72,6 +72,21 @@ tab to confirm everything is ready.
 
 ---
 
+## Validation matrix
+
+Three ways to run the app, from zero-setup to fully local. Pick columns left to
+right as you install more.
+
+| | **Mock mode** (default) | **Local Whisper mode** | **Full local** (Whisper + Foundry/Phi) |
+| --- | --- | --- | --- |
+| **Providers** | Transcription = Mock<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Foundry Local |
+| **Prerequisites** | Rust + Node 18+.<br>No CMake, libclang, models, or Foundry. | Mock prereqs **plus** CMake, MSVC "Desktop development with C++", and libclang.<br>GGML model at `%APPDATA%\com.voiceflow.local\models\ggml-base.en.bin`. | Local Whisper prereqs **plus** Foundry Local installed, service running, and `phi-4-mini-instruct` downloaded + loaded. |
+| **Setup / commands** | `npm install`<br>`npm run tauri dev -- --no-default-features` *(skips native whisper compile)* | `./scripts/check-native-build-prereqs.ps1`<br>`npm run tauri dev`<br>Settings → Transcription = **Local Whisper** | `winget install Microsoft.FoundryLocal`<br>`foundry service start`<br>`foundry model download phi-4-mini-instruct`<br>`foundry model load phi-4-mini-instruct`<br>`./scripts/check-local-models.ps1`<br>`./scripts/smoke-test-foundry.ps1`<br>Settings → both providers **Local**, then run **Health** tab |
+| **Expected result** | Full hotkey → record → deterministic transcript → deterministic rewrite (mode formatting + style rules) → editable preview → copy. | Real speech → **real** transcript → deterministic mock rewrite → editable preview → copy. | Real speech → real transcript → **Phi** rewrite per output mode (Teams/Email/Product note/Exec summary) → editable preview → copy. No-"kindly" enforced. |
+| **Known caveats** | Transcript & rewrite are canned/deterministic (no real ASR/LLM). Mic is still used if present; a missing mic is flagged in Health. | Native build needs the C/C++ toolchain; first model load is slow; English model by default. On ARM64 hosts use the emulation build recipe in **Native build & packaging**. | Foundry port is **dynamic** (discovered via `foundry service status`, never hardcoded); models need extra disk/RAM. **Not yet live-validated end-to-end — tracked in the v3 follow-up issue.** |
+
+---
+
 ## Architecture
 
 All provider logic lives in Rust behind async traits, so cloud providers can be
@@ -103,7 +118,8 @@ src-tauri/               Rust backend
     audio/               recorder.rs (cpal), wav.rs (hound), temp.rs (RAII cleanup)
     transcription/       mod.rs (trait), mock.rs, whisper_cpp.rs
     rewrite/             mod.rs (trait + OutputMode), mock.rs, foundry_local.rs, style.rs
-scripts/                 setup-local-models.ps1, check-local-models.ps1
+scripts/                 setup-local-models.ps1, check-local-models.ps1,
+                         check-native-build-prereqs.ps1, smoke-test-foundry.ps1
 ```
 
 ---
