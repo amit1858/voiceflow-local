@@ -35,14 +35,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 cpal = "0.15"
 hound = "3.5"
 
-# In-process whisper.cpp bindings. Gated behind the default `whisper` feature so
-# the crate still type-checks on machines without a C/C++ + CMake toolchain
-# (build with `--no-default-features` to skip native whisper compilation).
+# In-process whisper.cpp bindings. Gated behind the (opt-in) `whisper` feature so
+# a fresh checkout builds and runs in mock mode with NO C/C++ + CMake toolchain.
+# Enable real local transcription with `--features whisper` (see README).
 whisper-rs = { version = "0.14", optional = true }
 
 [features]
-default = ["whisper"]
-# Enables the real WhisperCppProvider (requires CMake + a C/C++ compiler).
+# Mock-first: the default build needs no native toolchain and runs end-to-end.
+default = []
+# Enables the real WhisperCppProvider. Requires CMake + a C/C++ compiler AND a
+# STABLE libclang (LLVM 17.x/18.x) — very new libclang (20+/trunk) mis-parses the
+# whisper.cpp headers and fails to build. See README "Native build & packaging".
 whisper = ["dep:whisper-rs"]
 
 [profile.release]

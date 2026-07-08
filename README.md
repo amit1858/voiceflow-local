@@ -81,9 +81,9 @@ right as you install more.
 | --- | --- | --- | --- |
 | **Providers** | Transcription = Mock<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Foundry Local |
 | **Prerequisites** | Rust + Node 18+.<br>No CMake, libclang, models, or Foundry. | Mock prereqs **plus** CMake, MSVC "Desktop development with C++", and libclang.<br>GGML model at `%APPDATA%\com.voiceflow.local\models\ggml-base.en.bin`. | Local Whisper prereqs **plus** Foundry Local installed, service running, and `phi-4-mini-instruct` downloaded + loaded. |
-| **Setup / commands** | `npm install`<br>`npm run tauri dev -- --no-default-features` *(skips native whisper compile)* | `./scripts/check-native-build-prereqs.ps1`<br>`npm run tauri dev`<br>Settings → Transcription = **Local Whisper** | `winget install Microsoft.FoundryLocal`<br>`foundry service start`<br>`foundry model download phi-4-mini-instruct`<br>`foundry model load phi-4-mini-instruct`<br>`./scripts/check-local-models.ps1`<br>`./scripts/smoke-test-foundry.ps1`<br>Settings → both providers **Local**, then run **Health** tab |
+| **Setup / commands** | `npm install`<br>`npm run tauri:dev` *(mock is the default — no native toolchain)* | `./scripts/check-native-build-prereqs.ps1`<br>`npm run tauri:dev:whisper`<br>Settings → Transcription = **Local Whisper** | `winget install Microsoft.FoundryLocal`<br>`foundry service start`<br>`foundry model download phi-4-mini-instruct`<br>`foundry model load phi-4-mini-instruct`<br>`./scripts/check-local-models.ps1`<br>`./scripts/smoke-test-foundry.ps1`<br>`npm run tauri:dev:whisper`, then Settings → both providers **Local** and run the **Health** tab |
 | **Expected result** | Full hotkey → record → deterministic transcript → deterministic rewrite (mode formatting + style rules) → editable preview → copy. | Real speech → **real** transcript → deterministic mock rewrite → editable preview → copy. | Real speech → real transcript → **Phi** rewrite per output mode (Teams/Email/Product note/Exec summary) → editable preview → copy. No-"kindly" enforced. |
-| **Known caveats** | Transcript & rewrite are canned/deterministic (no real ASR/LLM). Mic is still used if present; a missing mic is flagged in Health. | Native build needs the C/C++ toolchain; first model load is slow; English model by default. On ARM64 hosts use the emulation build recipe in **Native build & packaging**. | Foundry port is **dynamic** (discovered via `foundry service status`, never hardcoded); models need extra disk/RAM. **Not yet live-validated end-to-end — tracked in the v3 follow-up issue.** |
+| **Known caveats** | Transcript & rewrite are canned/deterministic (no real ASR/LLM). Mic is still used if present; a missing mic is flagged in Health. | Native build needs CMake + MSVC C++ **and a stable libclang (LLVM 17.x/18.x)** — a very new libclang (20+/trunk) fails with an `E0080 whisper_full_params` error. First model load is slow; English model by default. | Foundry port is **dynamic** (discovered via `foundry service status`, never hardcoded); models need extra disk/RAM. **Not yet live-validated end-to-end — tracked in the v3 follow-up issue.** |
 
 ---
 
@@ -131,10 +131,11 @@ npm install
 npm run tauri dev
 ```
 
-That's it. Both providers default to Mock, so you can record, process, edit the
-preview, and copy without installing any models. (Building the desktop app still
-needs the Tauri/Rust prerequisites below; native whisper is only compiled when
-you enable the `whisper` feature.)
+That's it. Both providers default to Mock and **the `whisper` feature is off by
+default**, so a fresh checkout builds and runs the full record → process → edit →
+copy loop with **no CMake, libclang, or models** — just the Tauri/Rust
+prerequisites. Enable real local transcription later with `--features whisper`
+(see below).
 
 To type-check / build just the frontend:
 
@@ -160,21 +161,27 @@ npm run build
   CMake from <https://cmake.org/download/> (or the Visual Studio "C++ CMake
   tools" component) and make sure `cmake` is on your `PATH`.
 - **libclang** — required by `bindgen` (used by `whisper-rs-sys`) to generate the
-  whisper.cpp FFI bindings. Install LLVM from <https://releases.llvm.org/> (or the
-  Visual Studio **"C++ Clang tools for Windows"** component) and, if it isn't
-  auto-detected, point `LIBCLANG_PATH` at the folder containing `libclang.dll`.
+  whisper.cpp FFI bindings. Install a **stable LLVM (17.x or 18.x)** from
+  <https://releases.llvm.org/> (or the Visual Studio **"C++ Clang tools for
+  Windows"** component) and, if it isn't auto-detected, point `LIBCLANG_PATH` at
+  the folder containing `libclang.dll`.
+  > ⚠️ **Use a stable libclang.** A very new libclang (LLVM **20+ / trunk**, e.g.
+  > clang 22) mis-parses the whisper.cpp headers and the build fails with
+  > `error[E0080]: attempt to compute 1_usize - 264_usize ... whisper_full_params`.
+  > `winget install LLVM.LLVM --version 18.1.8` (or download 17.x/18.x) fixes it.
 
-Run the preflight script to check all of the above at once:
+Run the preflight script to check all of the above at once (it also warns if your
+libclang is too new):
 
 ```powershell
 ./scripts/check-native-build-prereqs.ps1
 ```
 
-> **Build note:** the default Cargo features compile whisper.cpp from source,
-> which needs CMake + a C/C++ toolchain. To type-check the Rust without building
-> native whisper, use `cargo check --no-default-features`. In that build the
-> local Whisper provider is unavailable and health reports it as skipped —
-> mock transcription still works.
+> **Build note:** mock mode is the default and needs no native toolchain
+> (`cargo check` / `npm run tauri:dev`). The **`whisper` feature is opt-in**:
+> build real local transcription with `cargo check --features whisper` (or
+> `npm run tauri:dev:whisper`). Without it, the local Whisper provider is
+> unavailable and health reports it as skipped — mock transcription still works.
 
 ### 2. Install Microsoft Foundry Local
 
@@ -294,45 +301,58 @@ mock mode) are reported as **skipped**.
 ## Development notes
 
 - Rust unit tests cover the mock providers, the style post-filter, the Foundry
-  endpoint parser, and mock error mapping: `cargo test --no-default-features`.
+  endpoint parser, and mock error mapping. Mock is the default build, so
+  `cargo test` runs them with no native toolchain. Add `--features whisper` to
+  also compile the native Whisper provider and its (ignored) smoke test.
 - The frontend is type-checked by `tsc` as part of `npm run build`.
-- Building the full app (`npm run tauri dev` / `tauri build`) requires the
-  native prerequisites above; CMake is only needed for the `whisper` feature.
+- Building the app in mock mode (`npm run tauri:dev` / `tauri build`) needs only
+  the Tauri/Rust prerequisites; CMake + libclang are needed only for the opt-in
+  `whisper` feature.
 
 ---
 
 ## Native build & packaging (real local models)
 
-The default Cargo features compile whisper.cpp from source and link it into the
-app, enabling the **Local Whisper** provider. This has been validated end to end:
+The opt-in `whisper` Cargo feature compiles whisper.cpp from source and links it
+into the app, enabling the **Local Whisper** provider. This has been validated end
+to end:
 
-- `cargo check` / `cargo test` pass with the default `whisper` feature (whisper.cpp
-  compiles and links; all unit tests green).
+- `cargo check --features whisper` / `cargo test --features whisper` pass
+  (whisper.cpp compiles and links; all unit tests green).
 - A real transcription smoke test loads a GGML model and transcribes a known clip
   (see the ignored `smoke` test in `src-tauri/src/transcription/whisper_cpp.rs`,
-  driven by the `WHISPER_SMOKE_MODEL` / `WHISPER_SMOKE_WAV` env vars).
-- `tauri build --no-bundle` produces an optimized release binary
-  (`voiceflow-local.exe`).
+  driven by the `WHISPER_SMOKE_MODEL` / `WHISPER_SMOKE_WAV` env vars):
+  ```powershell
+  cargo test --features whisper transcribes_known_clip -- --ignored --nocapture
+  ```
+- `tauri build --features whisper --no-bundle` produces an optimized release
+  binary (`voiceflow-local.exe`).
+
+> ⚠️ **libclang version matters.** Use a stable LLVM (**17.x/18.x**). A very new
+> libclang (20+/trunk) makes `whisper-rs-sys` fail to build with
+> `error[E0080]: attempt to compute 1_usize - 264_usize ... whisper_full_params`
+> — bindgen mis-parses the struct layout. `winget install LLVM.LLVM --version 18.1.8`
+> (and set `LIBCLANG_PATH`) resolves it. The preflight script warns about this.
 
 ### Build the release binary
 
 ```powershell
-# Ensure native prereqs first:
+# Ensure native prereqs first (also checks the libclang version):
 ./scripts/check-native-build-prereqs.ps1
 
 # Type-check + compile the optimized binary (no installer):
-npm run tauri build -- --no-bundle
+npm run tauri:build:whisper -- --no-bundle
 ```
 
 ### Build a Windows installer
 
-`tauri build` produces **NSIS** and **MSI** installers (configured in
-`src-tauri/tauri.conf.json` under `bundle.targets`). WebView2 is delivered via the
-`downloadBootstrapper` install mode, so the installer stays small and fetches the
-runtime on first launch if it's missing.
+`tauri build --features whisper` produces **NSIS** and **MSI** installers
+(configured in `src-tauri/tauri.conf.json` under `bundle.targets`). WebView2 is
+delivered via the `downloadBootstrapper` install mode, so the installer stays
+small and fetches the runtime on first launch if it's missing.
 
 ```powershell
-npm run tauri build
+npm run tauri:build:whisper
 # Installers are written to:
 #   src-tauri/target/release/bundle/nsis/*.exe
 #   src-tauri/target/release/bundle/msi/*.msi
