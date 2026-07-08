@@ -38,6 +38,29 @@ pub fn write_wav_16k_mono(path: &Path, samples: &[i16]) -> Result<(), VfError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_valid_wav_for_empty_capture() {
+        // A quick start/stop tap can yield zero samples; the recorder still
+        // writes a valid (silent) WAV so the file exists and the pipeline can
+        // proceed (mock mode returns its canned transcript regardless).
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("voiceflow-test-empty-{}.wav", std::process::id()));
+
+        write_wav_16k_mono(&path, &[]).expect("empty WAV should write cleanly");
+        assert!(path.exists(), "an empty capture must still produce a file");
+
+        let (samples, rate) = read_wav_as_f32_mono(&path).expect("empty WAV should read back");
+        assert!(samples.is_empty());
+        assert_eq!(rate, TARGET_SAMPLE_RATE);
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
 /// Read a WAV file and return normalized `f32` mono samples in `[-1.0, 1.0]`.
 ///
 /// If the file is multi-channel it is down-mixed by averaging; if it is not

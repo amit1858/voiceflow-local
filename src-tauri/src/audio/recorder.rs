@@ -191,12 +191,13 @@ fn capture_loop(
         std::mem::take(&mut *guard)
     };
 
-    if captured.is_empty() {
-        return Err(VfError::AudioCaptureFailed {
-            detail: "no audio was captured".into(),
-        });
-    }
-
+    // A very short recording (a quick start/stop tap) can stop before WASAPI
+    // has delivered its first capture callback, leaving the buffer empty. That
+    // is not a hard failure: we still write a valid (silent) WAV so the file
+    // always exists when `stop()` succeeds. This keeps the pipeline flowing —
+    // mock mode returns its canned transcript regardless of audio content, and
+    // the real transcription path surfaces the friendlier, pipeline-level
+    // "transcript was empty" message instead of an opaque audio-capture error.
     let resampled = resample_linear(&captured, sample_rate, TARGET_SAMPLE_RATE);
     let pcm: Vec<i16> = resampled
         .iter()
