@@ -76,8 +76,13 @@ Head "Whisper model"
 
 $modelPath = Join-Path $WhisperModelDir $WhisperModelFile
 if (Test-Path $modelPath) {
-    $sizeMB = [math]::Round((Get-Item $modelPath).Length / 1MB, 1)
-    Pass "Whisper model present ($sizeMB MB): $modelPath"
+    $bytes = (Get-Item $modelPath).Length
+    $sizeMB = [math]::Round($bytes / 1MB, 1)
+    if ($bytes -lt 1MB) {
+        Fail "Whisper model at $modelPath is only $bytes bytes - likely a truncated download or a Git-LFS pointer. Re-download it."
+    } else {
+        Pass "Whisper model present ($sizeMB MB): $modelPath"
+    }
 } else {
     Info "Whisper model not found at: $modelPath"
     Info "This is only required if you use the Local Whisper provider."
