@@ -38,6 +38,13 @@ export default function App() {
   const [healthLoading, setHealthLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
 
+  // Debug/validation aid: track how many times the pipeline produced a result
+  // and when, so it's visually clear each recording re-ran the pipeline — even
+  // when a provider (e.g. mock) returns identical text every time.
+  const [runLabel, setRunLabel] = useState<string | null>(null);
+  const runCount = useRef(0);
+  const lastLabelled = useRef<PipelineResult | null>(null);
+
   const recorder = useRecorder();
 
   // Load settings once on mount and seed the default output mode.
@@ -86,6 +93,16 @@ export default function App() {
     lastAutoCopied.current = res;
     void handleCopy(res.output);
   }, [recorder.result, settings?.auto_copy, handleCopy]);
+
+  // Stamp each new pipeline result with a time + run counter.
+  useEffect(() => {
+    const res = recorder.result;
+    if (!res || res === lastLabelled.current) return;
+    lastLabelled.current = res;
+    runCount.current += 1;
+    const now = new Date().toLocaleTimeString();
+    setRunLabel(`Last processed at ${now} · run #${runCount.current}`);
+  }, [recorder.result]);
 
   const handleSaveSettings = useCallback(async (next: Settings) => {
     setSavingSettings(true);
@@ -221,7 +238,11 @@ export default function App() {
             <PreviewPane
               result={recorder.result}
               onCopy={handleCopy}
-              onClear={recorder.clearResult}
+              onClear={() => {
+                recorder.clearResult();
+                setRunLabel(null);
+              }}
+              runLabel={runLabel}
             />
           </section>
         </>

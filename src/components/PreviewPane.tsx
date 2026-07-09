@@ -5,6 +5,12 @@ interface Props {
   result: PipelineResult | null;
   onCopy: (text: string) => Promise<void> | void;
   onClear: () => void;
+  /**
+   * Optional debug/validation aid: a label like "Last processed at 11:04:07 PM
+   * · run #3" shown above the preview so it's visually obvious the pipeline
+   * re-ran, even when a provider (e.g. mock) returns identical text each time.
+   */
+  runLabel?: string | null;
 }
 
 /**
@@ -13,7 +19,7 @@ interface Props {
  * the clipboard (no auto-send). Editing the text never mutates the underlying
  * transcript; a new recording result resets the editable buffer.
  */
-export function PreviewPane({ result, onCopy, onClear }: Props) {
+export function PreviewPane({ result, onCopy, onClear, runLabel }: Props) {
   const [text, setText] = useState("");
   const [copied, setCopied] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
@@ -75,6 +81,12 @@ export function PreviewPane({ result, onCopy, onClear }: Props) {
         aria-label="Output text (editable)"
         spellCheck
       />
+
+      {runLabel && (
+        <p className="preview__run" aria-live="polite">
+          {runLabel}
+        </p>
+      )}
 
       {showRawToggle && (
         <div className="preview__raw">
