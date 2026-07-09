@@ -334,6 +334,93 @@ to end:
 > — bindgen mis-parses the struct layout. `winget install LLVM.LLVM --version 18.1.8`
 > (and set `LIBCLANG_PATH`) resolves it. The preflight script warns about this.
 
+### Local Whisper validation walkthrough (Windows, step by step)
+
+A practical checklist to go from mock mode to **real speech-to-text** with the
+Local Whisper provider.
+
+**Expected default model path** (identifier `com.voiceflow.local`):
+
+```
+C:\Users\<user>\AppData\Roaming\com.voiceflow.local\models\ggml-base.en.bin
+```
+
+This is the default; **Settings → Whisper model path** can override it.
+
+#### 1. Install stable LLVM/libclang (17.x or 18.x)
+
+`whisper-rs-sys` builds through bindgen, and **LLVM/libclang 19+** can trigger the
+`E0080` overflow described above. Install a stable 17.x/18.x release:
+
+```powershell
+winget install LLVM.LLVM --version 18.1.8
+
+# Point the build at it (in the same shell you build from):
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+
+# Confirm it is an x64 DLL — the "machine" line must read 8664:
+dumpbin /headers "C:\Program Files\LLVM\bin\libclang.dll" | findstr machine
+```
+
+Run `./scripts/check-native-build-prereqs.ps1` first — it warns when the libclang
+major version is 19 or higher.
+
+#### 2. Download the GGML Whisper model
+
+```powershell
+$dir = "$env:APPDATA\com.voiceflow.local\models"
+New-Item -ItemType Directory -Force $dir
+
+# Default model (~142 MB):
+curl -L -o "$dir\ggml-base.en.bin" `
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
+
+For a faster first smoke test, `ggml-tiny.en.bin` is smaller and quicker (lower
+accuracy). Model files are git-ignored — never commit them.
+
+#### 3. Build and run with the Whisper feature
+
+Use the **x64 Native Tools Command Prompt for VS 2022** (so `link.exe` and the x64
+MSVC libraries resolve), with `LIBCLANG_PATH` set as above:
+
+```powershell
+npm run tauri:dev:whisper
+```
+
+The first build compiles whisper.cpp via CMake — expect a few minutes.
+
+#### 4. Switch the app to Local Whisper
+
+1. Open **Settings → Transcription provider → Local Whisper**.
+2. Confirm the **Whisper model path** points at the file from step 2.
+3. Keep **Rewrite provider → Mock** for now, so you validate Whisper in isolation.
+4. **Save.** The header badge should read `Whisper · Mock rewrite`.
+
+#### 5. Run Health checks
+
+Open the **Health** tab and **Run checks**. For Whisper-only validation these
+should pass: *Whisper model exists & loads*, *temp audio folder writable*, and
+*microphone available*. The Foundry rows will fail — expected, since Foundry Local
+is not running yet.
+
+#### 6. Test real speech in Raw transcript mode
+
+Set output mode to **Raw transcript** (this bypasses rewrite), press
+**Ctrl+Shift+Space** (or click Start), speak a sentence, then stop. The preview
+should show your **actual words**, and the `Last processed at … · run #N` line
+updates each run. Click **Copy** and paste to confirm.
+
+#### Troubleshooting
+
+| Symptom | Cause & fix |
+| --- | --- |
+| **ModelMissing** error banner / failing health check | The model path or filename is wrong. Verify the file exists at the expected path and the name matches exactly (`ggml-base.en.bin`). |
+| **ModelLoadFailed** | The model file is corrupt or partially downloaded. Re-download it (check the file size). |
+| **`error[E0080]: attempt to compute 1_usize - 264_usize`** at build | libclang is 19+/trunk. Install LLVM 17.x/18.x and set `LIBCLANG_PATH` to it (see step 1). |
+| **`link.exe` not found** | You are not in the **x64 Native Tools Command Prompt for VS 2022**. Launch that shell (or run `vcvarsall.bat amd64`) and rebuild. |
+| **ARM64 vs x64 mismatch** (MSVC library conflicts, wrong-arch libclang) | Use the **x64** Rust toolchain (`stable-x86_64-pc-windows-msvc`), the **x64** VS tools shell, and an **x64** libclang (the `dumpbin` check must show `8664`). Building x64 under ARM64 emulation is supported but every tool must be x64. |
+
 ### Build the release binary
 
 ```powershell
