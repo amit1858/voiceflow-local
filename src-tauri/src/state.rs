@@ -15,10 +15,14 @@ use crate::errors::VfError;
 use crate::rewrite::foundry_local::FoundryLocalRewriteProvider;
 use crate::rewrite::mock::MockRewriteProvider;
 use crate::rewrite::{RewriteProvider, StyleRules};
-use crate::settings::{RewriteKind, Settings, TranscriptionKind};
+use crate::settings::{RewriteKind, Settings, TranscriptionKind, TtsKind};
 use crate::transcription::mock::MockTranscriptionProvider;
 use crate::transcription::sherpa::SherpaSttProvider;
 use crate::transcription::TranscriptionProvider;
+use crate::tts::mock::MockTtsProvider;
+use crate::tts::playback::ActivePlayback;
+use crate::tts::sherpa::SherpaTtsProvider;
+use crate::tts::TtsProvider;
 
 /// An in-progress recording plus the RAII temp-file guard for its WAV. Keeping
 /// the [`TempWav`] here guarantees the file is deleted even if processing is
@@ -42,6 +46,8 @@ pub struct AppState {
     pub model_dir: PathBuf,
     /// Shared writing-style rules.
     pub style: StyleRules,
+    /// The currently-playing TTS audio, if any (so Speak/Stop can interrupt it).
+    pub playback: Mutex<Option<ActivePlayback>>,
 }
 
 impl AppState {
@@ -54,6 +60,7 @@ impl AppState {
             app_data_dir,
             model_dir,
             style: StyleRules::default(),
+            playback: Mutex::new(None),
         }
     }
 
@@ -100,6 +107,21 @@ impl AppState {
                 settings.foundry_model,
                 settings.foundry_endpoint,
             )),
+        }
+    }
+
+    /// Build a TTS provider from the active settings. On a misconfigured Sherpa
+    /// voice (unknown id) we fail closed with a typed error rather than silently
+    /// falling back to the beep.
+    pub fn tts_provider(&self) -> Result<Box<dyn TtsProvider>, VfError> {
+        let settings = self.current_settings();
+        match settings.tts_provider {
+            TtsKind::Mock => Ok(Box::new(MockTtsProvider::new())),
+            TtsKind::Sherpa => {
+                let provider =
+                    SherpaTtsProvider::from_voice(&self.model_dir, &settings.tts_voice)?;
+                Ok(Box::new(provider))
+            }
         }
     }
 }

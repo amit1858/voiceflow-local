@@ -14,6 +14,7 @@ mod rewrite;
 mod settings;
 mod state;
 mod transcription;
+mod tts;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -71,6 +72,11 @@ pub fn run() {
             commands::save_settings,
             commands::run_health_checks,
             commands::clear_temp_files,
+            commands::speak,
+            commands::stop_speaking,
+            commands::list_voices,
+            commands::download_model,
+            commands::get_capabilities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running VoiceFlow Local");

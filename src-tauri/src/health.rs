@@ -168,6 +168,45 @@ pub fn speech_engine_available() -> bool {
     cfg!(feature = "sherpa")
 }
 
+/// Whether a default audio **output** device is available (for TTS playback).
+pub fn audio_output_available() -> bool {
+    cpal::default_host().default_output_device().is_some()
+}
+
+/// A compact snapshot of the running build's speech capabilities, surfaced as a
+/// UI capability badge so selecting an unavailable provider is never a silent
+/// trap. Field names match the TypeScript `Capabilities` interface.
+#[derive(Debug, Clone, Serialize)]
+pub struct Capabilities {
+    /// True when the running build has the real sherpa-onnx speech engine.
+    pub speech_engine: bool,
+    /// True when the selected STT model's files are present on disk.
+    pub stt_model_installed: bool,
+    /// True when the selected TTS voice's files are present on disk.
+    pub tts_voice_installed: bool,
+    /// True when a default audio output device exists.
+    pub audio_output_available: bool,
+}
+
+/// Compute the capability snapshot for the given settings.
+pub fn capabilities(settings: &Settings, models_root: &Path) -> Capabilities {
+    let stt_installed = models::find(&settings.stt_model)
+        .filter(|e| e.kind == ModelKind::Stt)
+        .map(|e| e.is_present(models_root))
+        .unwrap_or(false);
+    let tts_installed = models::find(&settings.tts_voice)
+        .filter(|e| e.kind == ModelKind::Tts)
+        .map(|e| e.is_present(models_root))
+        .unwrap_or(false);
+
+    Capabilities {
+        speech_engine: speech_engine_available(),
+        stt_model_installed: stt_installed,
+        tts_voice_installed: tts_installed,
+        audio_output_available: audio_output_available(),
+    }
+}
+
 /// Foundry Local: installed, service running, port discovered, Phi available,
 /// and a chat-completion smoke test.
 async fn check_foundry(settings: &Settings) -> Vec<HealthCheck> {
