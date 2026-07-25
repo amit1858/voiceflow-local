@@ -33,20 +33,52 @@ pub enum VfError {
     #[error("Failed to clean up temporary audio files")]
     TempCleanupFailed { detail: String },
 
-    // ---- Whisper / transcription ---------------------------------------
-    #[error("The local Whisper model file is missing")]
+    #[error("The recording was too short")]
+    RecordingTooShort { detail: String },
+
+    #[error("No speech was detected")]
+    NoSpeechDetected { detail: String },
+
+    // ---- Speech engine / transcription ---------------------------------
+    #[error("The local speech engine is not available in this build")]
+    SpeechEngineUnavailable { detail: String },
+
+    #[error("The local speech model file is missing")]
     ModelMissing { expected_path: String, hint: String },
 
-    #[error("The Whisper model file is invalid or unreadable")]
-    #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+    #[error("The speech model file is invalid or unreadable")]
+    #[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
     ModelInvalid { detail: String },
 
-    #[error("Failed to load the Whisper model")]
-    #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+    #[error("Failed to load the speech model")]
+    #[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
     ModelLoadFailed { detail: String },
 
     #[error("Transcription failed")]
     TranscriptionFailed { detail: String },
+
+    // ---- Model manager (download / verify) -----------------------------
+    #[error("Unknown model id")]
+    UnknownModel { id: String },
+
+    #[error("Downloading the model failed")]
+    ModelDownloadFailed { detail: String },
+
+    #[error("The downloaded model failed checksum verification")]
+    ModelChecksumMismatch { detail: String },
+
+    // ---- Text to speech -------------------------------------------------
+    #[error("The selected voice model is missing")]
+    TtsVoiceMissing { expected_path: String, hint: String },
+
+    #[error("Speech synthesis failed")]
+    TtsSynthFailed { detail: String },
+
+    #[error("Could not play the synthesized audio")]
+    TtsPlaybackFailed { detail: String },
+
+    #[error("No audio output device was found")]
+    NoAudioOutputDevice,
 
     // ---- Foundry Local / rewrite ---------------------------------------
     #[error("Microsoft Foundry Local is not installed")]
@@ -95,10 +127,20 @@ impl VfError {
             VfError::AudioCaptureFailed { .. } => "AudioCaptureFailed",
             VfError::InvalidAudioFile { .. } => "InvalidAudioFile",
             VfError::TempCleanupFailed { .. } => "TempCleanupFailed",
+            VfError::RecordingTooShort { .. } => "RecordingTooShort",
+            VfError::NoSpeechDetected { .. } => "NoSpeechDetected",
+            VfError::SpeechEngineUnavailable { .. } => "SpeechEngineUnavailable",
             VfError::ModelMissing { .. } => "ModelMissing",
             VfError::ModelInvalid { .. } => "ModelInvalid",
             VfError::ModelLoadFailed { .. } => "ModelLoadFailed",
             VfError::TranscriptionFailed { .. } => "TranscriptionFailed",
+            VfError::UnknownModel { .. } => "UnknownModel",
+            VfError::ModelDownloadFailed { .. } => "ModelDownloadFailed",
+            VfError::ModelChecksumMismatch { .. } => "ModelChecksumMismatch",
+            VfError::TtsVoiceMissing { .. } => "TtsVoiceMissing",
+            VfError::TtsSynthFailed { .. } => "TtsSynthFailed",
+            VfError::TtsPlaybackFailed { .. } => "TtsPlaybackFailed",
+            VfError::NoAudioOutputDevice => "NoAudioOutputDevice",
             VfError::FoundryNotInstalled => "FoundryNotInstalled",
             VfError::FoundryServiceNotRunning { .. } => "FoundryServiceNotRunning",
             VfError::FoundryPortNotDiscovered { .. } => "FoundryPortNotDiscovered",
@@ -119,6 +161,19 @@ impl VfError {
             VfError::ModelMissing { expected_path, hint } => {
                 Some(format!("Expected model at: {expected_path}\n{hint}"))
             }
+            VfError::TtsVoiceMissing { expected_path, hint } => {
+                Some(format!("Expected voice at: {expected_path}\n{hint}"))
+            }
+            VfError::SpeechEngineUnavailable { .. } => Some(
+                "This build was compiled without the local speech engine. Use the \
+speech-enabled release build (which ships the prebuilt sherpa-onnx binaries), or build from \
+source with `--features sherpa`. Mock providers keep working in any build."
+                    .to_string(),
+            ),
+            VfError::NoAudioOutputDevice => Some(
+                "Connect speakers or headphones and check the Windows output device, then retry."
+                    .to_string(),
+            ),
             VfError::FoundryNotInstalled => Some(
                 "Install with `winget install Microsoft.FoundryLocal`, then run \
 `foundry service start` and `foundry model load phi-4-mini-instruct`. You can keep using \
@@ -148,6 +203,12 @@ or set a manual endpoint override in Settings."
             | VfError::AudioCaptureFailed { detail }
             | VfError::InvalidAudioFile { detail }
             | VfError::TempCleanupFailed { detail }
+            | VfError::RecordingTooShort { detail }
+            | VfError::NoSpeechDetected { detail }
+            | VfError::ModelDownloadFailed { detail }
+            | VfError::ModelChecksumMismatch { detail }
+            | VfError::TtsSynthFailed { detail }
+            | VfError::TtsPlaybackFailed { detail }
             | VfError::FoundryNoResponse { detail }
             | VfError::SettingsError { detail }
             | VfError::Internal { detail } => {
@@ -157,6 +218,7 @@ or set a manual endpoint override in Settings."
                     Some(detail.clone())
                 }
             }
+            VfError::UnknownModel { id } => Some(format!("No model registered with id `{id}`.")),
             _ => None,
         }
     }

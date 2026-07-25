@@ -8,6 +8,7 @@ mod audio;
 mod commands;
 mod errors;
 mod health;
+mod models;
 mod pipeline;
 mod rewrite;
 mod settings;

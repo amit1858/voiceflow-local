@@ -19,13 +19,25 @@ Thumbs.db
 !.vscode/extensions.json
 .idea/
 
-# Local models — never commit model weights
+# Local model DATA — never commit model weights, voices, or the prebuilt
+# speech-engine DLLs. These live in the app-data dir at runtime and in
+# src-tauri/resources/models at package time; the Rust *source* module
+# src-tauri/src/models/ is NOT a data dir and must stay tracked.
 *.bin
 *.gguf
 *.ggml
-models/
+*.onnx
+*.onnx.data
+tokens.txt
+lexicon.txt
 whisper-models/
 src-tauri/models/
+src-tauri/resources/
+# ONNX Runtime / sherpa-onnx prebuilt native libraries.
+*.dll
+*.dylib
+*.so
+*.so.*
 
 # Local runtime / temp / config
 voiceflow-*.wav
