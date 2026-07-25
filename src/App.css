@@ -184,6 +184,26 @@ body {
   font-size: 0.85rem;
 }
 
+/* Live mic-level meter shown while recording. */
+.indicator__meter {
+  display: inline-block;
+  vertical-align: middle;
+  width: 120px;
+  height: 8px;
+  margin-left: 10px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.25);
+  overflow: hidden;
+}
+
+.indicator__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #22c55e, #eab308 70%, #ef4444);
+  transition: width 90ms linear;
+}
+
 /* Mode picker */
 .mode-picker__row {
   display: flex;

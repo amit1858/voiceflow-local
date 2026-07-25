@@ -8,15 +8,64 @@
 //! WAV. The finished audio is returned via the thread's join handle.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
 use crate::audio::wav::{write_wav_16k_mono, TARGET_SAMPLE_RATE};
 use crate::errors::VfError;
+
+/// Minimum acceptable capture duration. A quick start/stop tap below this is
+/// reported as [`VfError::RecordingTooShort`] instead of yielding an empty
+/// transcript.
+pub const MIN_CAPTURE_SECS: f32 = 0.35;
+
+/// RMS level below which a capture is treated as silence (no speech). Normal
+/// speech sits well above this; true silence is orders of magnitude lower.
+pub const SILENCE_RMS: f32 = 0.0025;
+
+/// Callback invoked ~10×/second with the current input level in `[0.0, 1.0]`
+/// so the UI can show a live mic meter.
+pub type LevelCb = Arc<dyn Fn(f32) + Send + Sync>;
+
+/// Compute the RMS (root-mean-square) level of mono samples in `[-1, 1]`.
+pub fn rms_level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    ((sum_sq / samples.len() as f64).sqrt()) as f32
+}
+
+/// Guard a finished capture: reject taps that are too short or effectively
+/// silent with a precise, typed error. Returns `Ok(())` for usable audio.
+pub fn evaluate_capture(samples: &[f32], sample_rate: u32) -> Result<(), VfError> {
+    let rate = sample_rate.max(1) as f32;
+    let duration = samples.len() as f32 / rate;
+    if duration < MIN_CAPTURE_SECS {
+        return Err(VfError::RecordingTooShort {
+            detail: format!(
+                "the recording was {duration:.2}s; hold the hotkey and speak for at least \
+{MIN_CAPTURE_SECS:.2}s."
+            ),
+        });
+    }
+    let level = rms_level(samples);
+    if level < SILENCE_RMS {
+        return Err(VfError::NoSpeechDetected {
+            detail: format!(
+                "the input level was near silence (rms {level:.4}). Move closer to the mic, \
+unmute it, or check the Windows input device."
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// Handle to an in-progress recording running on a background capture thread.
 pub struct ActiveRecording {
@@ -29,14 +78,15 @@ pub struct ActiveRecording {
 impl ActiveRecording {
     /// Start capturing from the default input device, writing to `output_path`
     /// when stopped. Returns once capture has actually begun (or fails fast if
-    /// there is no microphone / permission was denied).
-    pub fn start(output_path: PathBuf) -> Result<Self, VfError> {
+    /// there is no microphone / permission was denied). `on_level` (optional) is
+    /// called ~10×/second with the live input level for a UI mic meter.
+    pub fn start(output_path: PathBuf, on_level: Option<LevelCb>) -> Result<Self, VfError> {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), VfError>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
         let thread_path = output_path.clone();
         let thread = std::thread::spawn(move || {
-            capture_loop(thread_path, ready_tx, stop_rx)
+            capture_loop(thread_path, ready_tx, stop_rx, on_level)
         });
 
         // Wait for the capture thread to report whether the stream started.
@@ -83,6 +133,7 @@ fn capture_loop(
     output_path: PathBuf,
     ready_tx: Sender<Result<(), VfError>>,
     stop_rx: Receiver<()>,
+    on_level: Option<LevelCb>,
 ) -> Result<(), VfError> {
     let host = cpal::default_host();
     let device = match host.default_input_device() {
@@ -111,11 +162,21 @@ fn capture_loop(
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
     let cb_buffer = Arc::clone(&buffer);
 
+    // Live input level (RMS of the most recent callback), shared with a ticker
+    // thread that pushes it to the UI.
+    let level = Arc::new(Mutex::new(0.0f32));
+    let cb_level = Arc::clone(&level);
+
     let err_buffer = Arc::new(Mutex::new(None::<String>));
-    let err_slot = Arc::clone(&err_buffer);
-    let err_fn = move |e: cpal::StreamError| {
-        if let Ok(mut slot) = err_slot.lock() {
-            *slot = Some(e.to_string());
+    let make_err_fn = {
+        let err_buffer = Arc::clone(&err_buffer);
+        move || {
+            let err_slot = Arc::clone(&err_buffer);
+            move |e: cpal::StreamError| {
+                if let Ok(mut slot) = err_slot.lock() {
+                    *slot = Some(e.to_string());
+                }
+            }
         }
     };
 
@@ -123,28 +184,42 @@ fn capture_loop(
     let stream_result = match sample_format {
         SampleFormat::F32 => device.build_input_stream(
             &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                push_mono(&cb_buffer, data, channels, |s| s);
+            {
+                let cb_buffer = Arc::clone(&cb_buffer);
+                let cb_level = Arc::clone(&cb_level);
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    push_mono(&cb_buffer, &cb_level, data, channels, |s| s);
+                }
             },
-            err_fn,
+            make_err_fn(),
             None,
         ),
         SampleFormat::I16 => device.build_input_stream(
             &config,
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                push_mono(&cb_buffer, data, channels, |s| s as f32 / i16::MAX as f32);
+            {
+                let cb_buffer = Arc::clone(&cb_buffer);
+                let cb_level = Arc::clone(&cb_level);
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    push_mono(&cb_buffer, &cb_level, data, channels, |s| {
+                        s as f32 / i16::MAX as f32
+                    });
+                }
             },
-            err_fn,
+            make_err_fn(),
             None,
         ),
         SampleFormat::U16 => device.build_input_stream(
             &config,
-            move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                push_mono(&cb_buffer, data, channels, |s| {
-                    (s as f32 - u16::MAX as f32 / 2.0) / (u16::MAX as f32 / 2.0)
-                });
+            {
+                let cb_buffer = Arc::clone(&cb_buffer);
+                let cb_level = Arc::clone(&cb_level);
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    push_mono(&cb_buffer, &cb_level, data, channels, |s| {
+                        (s as f32 - u16::MAX as f32 / 2.0) / (u16::MAX as f32 / 2.0)
+                    });
+                }
             },
-            err_fn,
+            make_err_fn(),
             None,
         ),
         other => {
@@ -174,11 +249,33 @@ fn capture_loop(
     // Capture is live.
     let _ = ready_tx.send(Ok(()));
 
+    // Emit the live input level to the UI ~10×/second until we stop.
+    let ticker_running = Arc::new(AtomicBool::new(true));
+    let ticker_handle = on_level.map(|cb| {
+        let level_r = Arc::clone(&level);
+        let running_r = Arc::clone(&ticker_running);
+        std::thread::spawn(move || {
+            while running_r.load(Ordering::Relaxed) {
+                let v = level_r.lock().map(|g| *g).unwrap_or(0.0);
+                cb(v);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // Final zero so the meter settles.
+            cb(0.0);
+        })
+    });
+
     // Block until asked to stop (or the sender is dropped).
     let _ = stop_rx.recv();
 
     // Stop the stream and flush.
     drop(stream);
+
+    // Stop the level ticker.
+    ticker_running.store(false, Ordering::Relaxed);
+    if let Some(h) = ticker_handle {
+        let _ = h.join();
+    }
 
     if let Some(msg) = err_buffer.lock().ok().and_then(|g| g.clone()) {
         return Err(VfError::AudioCaptureFailed { detail: msg });
@@ -191,14 +288,13 @@ fn capture_loop(
         std::mem::take(&mut *guard)
     };
 
-    // A very short recording (a quick start/stop tap) can stop before WASAPI
-    // has delivered its first capture callback, leaving the buffer empty. That
-    // is not a hard failure: we still write a valid (silent) WAV so the file
-    // always exists when `stop()` succeeds. This keeps the pipeline flowing —
-    // mock mode returns its canned transcript regardless of audio content, and
-    // the real transcription path surfaces the friendlier, pipeline-level
-    // "transcript was empty" message instead of an opaque audio-capture error.
+    // Resample to 16 kHz mono first, then guard against too-short / silent
+    // captures with a precise, typed error. A quick tap or a muted mic now
+    // yields a friendly "too short / no speech detected" message instead of an
+    // empty transcript. (The RAII temp guard still deletes any file.)
     let resampled = resample_linear(&captured, sample_rate, TARGET_SAMPLE_RATE);
+    evaluate_capture(&resampled, TARGET_SAMPLE_RATE)?;
+
     let pcm: Vec<i16> = resampled
         .iter()
         .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
@@ -208,9 +304,11 @@ fn capture_loop(
     Ok(())
 }
 
-/// Down-mix an interleaved frame buffer to mono and append to `buffer`.
+/// Down-mix an interleaved frame buffer to mono, append to `buffer`, and update
+/// the shared live-level slot with this chunk's RMS.
 fn push_mono<T: Copy>(
     buffer: &Arc<Mutex<Vec<f32>>>,
+    level: &Arc<Mutex<f32>>,
     data: &[T],
     channels: usize,
     convert: impl Fn(T) -> f32,
@@ -218,15 +316,25 @@ fn push_mono<T: Copy>(
     if channels == 0 {
         return;
     }
+    let mut chunk: Vec<f32> = Vec::new();
     if let Ok(mut guard) = buffer.lock() {
         if channels == 1 {
-            guard.extend(data.iter().map(|&s| convert(s)));
+            for &s in data {
+                let v = convert(s);
+                chunk.push(v);
+                guard.push(v);
+            }
         } else {
             for frame in data.chunks(channels) {
                 let sum: f32 = frame.iter().map(|&s| convert(s)).sum();
-                guard.push(sum / frame.len() as f32);
+                let v = sum / frame.len() as f32;
+                chunk.push(v);
+                guard.push(v);
             }
         }
+    }
+    if let Ok(mut slot) = level.lock() {
+        *slot = rms_level(&chunk);
     }
 }
 
@@ -259,5 +367,60 @@ fn map_stream_error(msg: &str) -> VfError {
         VfError::MicPermissionDenied
     } else {
         VfError::AudioCaptureFailed { detail: msg.to_string() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rms_of_silence_is_zero() {
+        assert_eq!(rms_level(&[]), 0.0);
+        assert_eq!(rms_level(&[0.0; 1000]), 0.0);
+    }
+
+    #[test]
+    fn rms_of_full_scale_square_is_one() {
+        let sig: Vec<f32> = (0..1000)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let level = rms_level(&sig);
+        assert!((level - 1.0).abs() < 1e-6, "rms was {level}");
+    }
+
+    #[test]
+    fn rms_of_half_amplitude_sine_is_about_0_35() {
+        // A 0.5-amplitude sine has RMS = 0.5 / sqrt(2) ≈ 0.3536.
+        let sig: Vec<f32> = (0..16000)
+            .map(|i| 0.5 * (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / 16000.0).sin())
+            .collect();
+        let level = rms_level(&sig);
+        assert!((level - 0.3536).abs() < 0.01, "rms was {level}");
+    }
+
+    #[test]
+    fn evaluate_rejects_too_short() {
+        // 0.1s at 16 kHz = 1600 samples, below MIN_CAPTURE_SECS (0.35s).
+        let sig = vec![0.5f32; 1600];
+        let err = evaluate_capture(&sig, TARGET_SAMPLE_RATE).unwrap_err();
+        assert!(matches!(err, VfError::RecordingTooShort { .. }));
+    }
+
+    #[test]
+    fn evaluate_rejects_silence() {
+        // 1s of near-silence: long enough, but below SILENCE_RMS.
+        let sig = vec![0.0f32; TARGET_SAMPLE_RATE as usize];
+        let err = evaluate_capture(&sig, TARGET_SAMPLE_RATE).unwrap_err();
+        assert!(matches!(err, VfError::NoSpeechDetected { .. }));
+    }
+
+    #[test]
+    fn evaluate_accepts_normal_speech_level() {
+        // 1s of a 0.3-amplitude tone: long enough and above the silence floor.
+        let sig: Vec<f32> = (0..TARGET_SAMPLE_RATE as usize)
+            .map(|i| 0.3 * (i as f32 * 2.0 * std::f32::consts::PI * 220.0 / 16000.0).sin())
+            .collect();
+        assert!(evaluate_capture(&sig, TARGET_SAMPLE_RATE).is_ok());
     }
 }

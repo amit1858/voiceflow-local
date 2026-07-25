@@ -126,3 +126,13 @@ export async function onHotkeyToggle(
 ): Promise<UnlistenFn> {
   return listen("hotkey-toggle", () => handler());
 }
+
+/**
+ * Subscribe to the backend "input-level" event, emitted ~10×/second while
+ * recording with the live microphone RMS level in `[0, 1]` for the mic meter.
+ */
+export async function onInputLevel(
+  handler: (level: number) => void,
+): Promise<UnlistenFn> {
+  return listen<number>("input-level", (e) => handler(e.payload));
+}

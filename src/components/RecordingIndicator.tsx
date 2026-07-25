@@ -6,6 +6,8 @@ interface Props {
   hotkey: string;
   /** True when a real local model (Whisper/Foundry) is the active provider. */
   localModels?: boolean;
+  /** Live input level in [0, 1] emitted while recording (for the mic meter). */
+  level?: number;
 }
 
 /**
@@ -14,7 +16,7 @@ interface Props {
  * otherwise. The elapsed timer reassures the user that slow local-model
  * inference is still running (not frozen).
  */
-export function RecordingIndicator({ state, hotkey, localModels }: Props) {
+export function RecordingIndicator({ state, hotkey, localModels, level = 0 }: Props) {
   const [elapsed, setElapsed] = useState(0);
 
   // Run a 1s ticker only while processing so the user sees progress.
@@ -30,11 +32,21 @@ export function RecordingIndicator({ state, hotkey, localModels }: Props) {
     return () => clearInterval(id);
   }, [state]);
 
+  // Scale RMS to a friendlier meter width; speech rarely exceeds ~0.4 RMS.
+  const meterPct = Math.min(100, Math.round(Math.min(level / 0.4, 1) * 100));
+
   return (
     <div className={`indicator indicator--${state}`} role="status" aria-live="polite">
       <span className="indicator__dot" aria-hidden="true" />
       <span className="indicator__label">
-        {state === "recording" && "Recording… press hotkey to stop"}
+        {state === "recording" && (
+          <>
+            Recording… press hotkey to stop
+            <span className="indicator__meter" aria-hidden="true">
+              <span className="indicator__meter-fill" style={{ width: `${meterPct}%` }} />
+            </span>
+          </>
+        )}
         {state === "processing" && (
           <>
             Transcribing &amp; rewriting… {elapsed > 0 && <strong>{elapsed}s</strong>}

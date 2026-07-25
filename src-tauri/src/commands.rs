@@ -4,7 +4,7 @@
 //! `{ code, message, hint }` so the UI can render a friendly banner. See
 //! `src/lib/ipc.ts` for the matching TypeScript wrappers.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::audio::recorder::ActiveRecording;
@@ -18,7 +18,7 @@ use crate::state::{AppState, RecordingSession};
 
 /// Start capturing microphone audio to a fresh temp WAV.
 #[tauri::command]
-pub fn start_recording(state: State<'_, AppState>) -> Result<(), VfError> {
+pub fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(), VfError> {
     let mut guard = state
         .recording
         .lock()
@@ -30,7 +30,15 @@ pub fn start_recording(state: State<'_, AppState>) -> Result<(), VfError> {
 
     // Allocate the temp path; the RAII guard deletes the file when dropped.
     let temp = TempWav::new();
-    let active = ActiveRecording::start(temp.path().to_path_buf())?;
+
+    // Emit a live input level (~10×/second) so the UI can show a mic meter and
+    // the user can see whether the mic is actually picking up sound.
+    let level_app = app.clone();
+    let on_level: crate::audio::recorder::LevelCb =
+        std::sync::Arc::new(move |level: f32| {
+            let _ = level_app.emit("input-level", level);
+        });
+    let active = ActiveRecording::start(temp.path().to_path_buf(), Some(on_level))?;
 
     *guard = Some(RecordingSession { active, temp });
     Ok(())

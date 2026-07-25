@@ -13,6 +13,7 @@ import {
   clearTempFiles,
   copyToClipboard,
   getSettings,
+  onInputLevel,
   runHealthChecks,
   saveSettings,
 } from "./lib/ipc";
@@ -33,6 +34,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [copyError, setCopyError] = useState<VfError | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [inputLevel, setInputLevel] = useState(0);
 
   const [health, setHealth] = useState<HealthCheck[]>([]);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -64,6 +66,26 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Subscribe to the live mic level while the app is open; reset to zero
+  // whenever we leave the recording state so the meter settles.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onInputLevel((level) => setInputLevel(level));
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (recorder.state !== "recording") setInputLevel(0);
+  }, [recorder.state]);
 
   // The hotkey handler must always use the latest `mode`; the hook keeps the
   // handler in a ref so this closure stays current without re-subscribing.
@@ -199,6 +221,7 @@ export default function App() {
             <RecordingIndicator
               state={recorder.state}
               hotkey={hotkey}
+              level={inputLevel}
               localModels={
                 settings?.transcription_provider === "sherpa" ||
                 settings?.rewrite_provider === "foundry_local"
