@@ -9,6 +9,7 @@ use std::path::Path;
 use cpal::traits::HostTrait;
 use serde::Serialize;
 
+use crate::models::{self, ModelKind};
 use crate::rewrite::foundry_local::FoundryLocalRewriteProvider;
 use crate::settings::{RewriteKind, Settings, TranscriptionKind};
 
@@ -48,12 +49,12 @@ impl HealthCheck {
 }
 
 /// Run all health checks against the given settings.
-pub async fn run_health_checks(settings: &Settings) -> Vec<HealthCheck> {
+pub async fn run_health_checks(settings: &Settings, models_root: &Path) -> Vec<HealthCheck> {
     let mut checks = Vec::new();
 
     checks.push(check_temp_writable());
     checks.push(check_microphone());
-    checks.extend(check_whisper(settings));
+    checks.extend(check_stt(settings, models_root));
     checks.extend(check_foundry(settings).await);
 
     checks
@@ -101,74 +102,70 @@ fn check_microphone() -> HealthCheck {
     }
 }
 
-/// Whisper model presence (and load, when the whisper feature is built).
-fn check_whisper(settings: &Settings) -> Vec<HealthCheck> {
-    let active = settings.transcription_provider == TranscriptionKind::LocalWhisper;
-    let path = Path::new(&settings.whisper_model_path);
+/// Speech-engine capability + STT model presence.
+fn check_stt(settings: &Settings, models_root: &Path) -> Vec<HealthCheck> {
+    let active = settings.transcription_provider == TranscriptionKind::Sherpa;
 
-    let exists = if path.exists() {
-        HealthCheck::new(
-            "whisper_model_exists",
-            "Whisper model exists",
-            HealthStatus::Pass,
-            format!("Found model at {}", path.display()),
-        )
-    } else {
-        HealthCheck::new(
-            "whisper_model_exists",
-            "Whisper model exists",
+    // Is the real speech engine compiled into this build?
+    let engine = HealthCheck::new(
+        "speech_engine",
+        "Local speech engine available",
+        if speech_engine_available() {
+            HealthStatus::Pass
+        } else if active {
+            HealthStatus::Fail
+        } else {
+            HealthStatus::Skipped
+        },
+        if speech_engine_available() {
+            "sherpa-onnx is compiled in (prebuilt binaries; no toolchain needed).".to_string()
+        } else {
+            "This build has no local speech engine. Use the speech-enabled release build or build \
+with `--features sherpa`. Mock providers still work."
+                .to_string()
+        },
+    );
+
+    // STT model files present on disk?
+    let entry = models::find(&settings.stt_model).filter(|e| e.kind == ModelKind::Stt);
+    let present = match entry {
+        Some(e) => {
+            let ok = e.is_present(models_root);
+            HealthCheck::new(
+                "stt_model_exists",
+                "Speech-to-text model present",
+                if ok {
+                    HealthStatus::Pass
+                } else if active {
+                    HealthStatus::Fail
+                } else {
+                    HealthStatus::Skipped
+                },
+                if ok {
+                    format!("`{}` is installed in {}.", e.display_name, e.dir(models_root).display())
+                } else {
+                    format!(
+                        "`{}` is not downloaded yet. Download it from Settings or run \
+scripts/setup-local-models.ps1 (the packaged app also bundles the tiny model).",
+                        e.display_name
+                    )
+                },
+            )
+        }
+        None => HealthCheck::new(
+            "stt_model_exists",
+            "Speech-to-text model present",
             if active { HealthStatus::Fail } else { HealthStatus::Skipped },
-            format!(
-                "No model at {}. Download a GGML model (e.g. ggml-base.en.bin) and place it there, \
-or keep using the Mock transcription provider.",
-                path.display()
-            ),
-        )
+            format!("Unknown STT model id `{}`.", settings.stt_model),
+        ),
     };
 
-    let load = check_whisper_load(settings, active);
-
-    vec![exists, load]
+    vec![engine, present]
 }
 
-#[cfg(feature = "whisper")]
-fn check_whisper_load(settings: &Settings, active: bool) -> HealthCheck {
-    use crate::transcription::whisper_cpp::LocalWhisperTranscriptionProvider;
-
-    if !active {
-        return HealthCheck::new(
-            "whisper_model_loads",
-            "Whisper model loads",
-            HealthStatus::Skipped,
-            "Mock transcription provider active; local Whisper not in use.",
-        );
-    }
-
-    let provider = LocalWhisperTranscriptionProvider::new(settings.whisper_model_path.clone().into());
-    match provider.validate_model() {
-        Ok(()) => HealthCheck::new(
-            "whisper_model_loads",
-            "Whisper model loads",
-            HealthStatus::Pass,
-            "Model file is present and looks valid; it will be loaded on first use.",
-        ),
-        Err(e) => HealthCheck::new(
-            "whisper_model_loads",
-            "Whisper model loads",
-            HealthStatus::Fail,
-            e.hint().unwrap_or_else(|| e.to_string()),
-        ),
-    }
-}
-
-#[cfg(not(feature = "whisper"))]
-fn check_whisper_load(_settings: &Settings, _active: bool) -> HealthCheck {
-    HealthCheck::new(
-        "whisper_model_loads",
-        "Whisper model loads",
-        HealthStatus::Skipped,
-        "This build was compiled without the `whisper` feature; local Whisper is unavailable.",
-    )
+/// Whether the real sherpa-onnx speech engine is compiled into this build.
+pub fn speech_engine_available() -> bool {
+    cfg!(feature = "sherpa")
 }
 
 /// Foundry Local: installed, service running, port discovered, Phi available,

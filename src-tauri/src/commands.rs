@@ -59,8 +59,10 @@ pub async fn stop_and_process(
     // the WAV. We also call `cleanup()` explicitly on the success path.
     let wav_path = active.stop()?;
 
-    // Build providers from the current settings (mock-first by default).
-    let transcriber = state.transcriber();
+    // Build providers from the current settings (mock-first by default). A
+    // misconfigured real provider fails closed here with a typed error (the
+    // temp WAV is still cleaned up because `temp` drops on this early return).
+    let transcriber = state.transcriber()?;
     let rewriter = state.rewriter();
     let style = state.style.clone();
 
@@ -194,7 +196,7 @@ pub async fn run_health_checks(
     state: State<'_, AppState>,
 ) -> Result<Vec<HealthCheck>, VfError> {
     let settings = state.current_settings();
-    Ok(health::run_health_checks(&settings).await)
+    Ok(health::run_health_checks(&settings, &state.model_dir).await)
 }
 
 /// Delete any leftover `voiceflow-*.wav` temp files. Returns how many were

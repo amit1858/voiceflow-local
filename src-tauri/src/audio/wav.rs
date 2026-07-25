@@ -1,8 +1,9 @@
 //! WAV read/write helpers built on `hound`.
 //!
 //! VoiceFlow always works with **16 kHz, mono, 16-bit PCM** WAV files, which is
-//! exactly what whisper.cpp expects. The recorder writes with [`write_wav_16k_mono`]
-//! and the transcription provider reads back with [`read_wav_as_f32_mono`].
+//! exactly what the sherpa-onnx speech engine expects. The recorder writes with
+//! [`write_wav_16k_mono`] and the transcription provider reads back with
+//! [`read_wav_as_f32_mono`].
 
 use std::path::Path;
 
@@ -10,7 +11,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 
 use crate::errors::VfError;
 
-/// Target sample rate for the pipeline (whisper.cpp requirement).
+/// Target sample rate for the pipeline (sherpa-onnx STT requirement).
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
 /// Write mono 16-bit PCM samples at 16 kHz to `path`.
@@ -67,9 +68,9 @@ mod tests {
 /// already 16 kHz the caller is responsible for resampling (the recorder always
 /// writes 16 kHz, so this is a no-op in practice — but we still surface the rate).
 ///
-/// Only used by the whisper transcription path; unused when built without the
-/// `whisper` feature.
-#[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+/// Only used by the Sherpa transcription path; unused when built without the
+/// `sherpa` feature.
+#[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
 pub fn read_wav_as_f32_mono(path: &Path) -> Result<(Vec<f32>, u32), VfError> {
     let mut reader = hound::WavReader::open(path)
         .map_err(|e| VfError::TranscriptionFailed { detail: format!("WAV open failed: {e}") })?;

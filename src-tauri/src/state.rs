@@ -11,12 +11,13 @@ use std::sync::Mutex;
 
 use crate::audio::recorder::ActiveRecording;
 use crate::audio::temp::TempWav;
+use crate::errors::VfError;
 use crate::rewrite::foundry_local::FoundryLocalRewriteProvider;
 use crate::rewrite::mock::MockRewriteProvider;
 use crate::rewrite::{RewriteProvider, StyleRules};
 use crate::settings::{RewriteKind, Settings, TranscriptionKind};
 use crate::transcription::mock::MockTranscriptionProvider;
-use crate::transcription::whisper_cpp::LocalWhisperTranscriptionProvider;
+use crate::transcription::sherpa::SherpaSttProvider;
 use crate::transcription::TranscriptionProvider;
 
 /// An in-progress recording plus the RAII temp-file guard for its WAV. Keeping
@@ -64,14 +65,29 @@ impl AppState {
             .unwrap_or_else(|_| Settings::defaults(&self.model_dir))
     }
 
-    /// Build a transcription provider from the active settings.
-    pub fn transcriber(&self) -> Box<dyn TranscriptionProvider> {
+    /// The directory holding speech-to-text models (`<models>/stt`).
+    pub fn stt_dir(&self) -> PathBuf {
+        self.model_dir.clone()
+    }
+
+    /// The directory holding text-to-speech voices (`<models>/tts`).
+    #[allow(dead_code)]
+    pub fn tts_dir(&self) -> PathBuf {
+        self.model_dir.clone()
+    }
+
+    /// Build a transcription provider from the active settings. On a
+    /// misconfigured Sherpa selection (unknown model id) we fail closed with a
+    /// typed error rather than silently returning mock output.
+    pub fn transcriber(&self) -> Result<Box<dyn TranscriptionProvider>, VfError> {
         let settings = self.current_settings();
         match settings.transcription_provider {
-            TranscriptionKind::Mock => Box::new(MockTranscriptionProvider::new()),
-            TranscriptionKind::LocalWhisper => Box::new(LocalWhisperTranscriptionProvider::new(
-                PathBuf::from(settings.whisper_model_path),
-            )),
+            TranscriptionKind::Mock => Ok(Box::new(MockTranscriptionProvider::new())),
+            TranscriptionKind::Sherpa => {
+                let provider =
+                    SherpaSttProvider::from_model(&self.model_dir, &settings.stt_model)?;
+                Ok(Box::new(provider))
+            }
         }
     }
 

@@ -156,7 +156,7 @@ export default function App() {
         : "Start recording";
 
   const providerBadge = settings
-    ? `${settings.transcription_provider === "mock" ? "Mock STT" : "Whisper"} · ${
+    ? `${settings.transcription_provider === "mock" ? "Mock STT" : "Sherpa STT"} · ${
         settings.rewrite_provider === "mock" ? "Mock rewrite" : "Foundry Local"
       }`
     : "…";
@@ -200,7 +200,7 @@ export default function App() {
               state={recorder.state}
               hotkey={hotkey}
               localModels={
-                settings?.transcription_provider === "local_whisper" ||
+                settings?.transcription_provider === "sherpa" ||
                 settings?.rewrite_provider === "foundry_local"
               }
             />

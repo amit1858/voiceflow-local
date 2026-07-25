@@ -65,7 +65,7 @@ export function SettingsPanel({ settings, onSave, onClearTemp, saving }: Props) 
           }
         >
           <option value="mock">Mock (no models needed)</option>
-          <option value="local_whisper">Local Whisper (whisper.cpp)</option>
+          <option value="sherpa">Local speech engine (sherpa-onnx)</option>
         </select>
       </label>
 
@@ -84,13 +84,17 @@ export function SettingsPanel({ settings, onSave, onClearTemp, saving }: Props) 
       </label>
 
       <label className="field">
-        <span className="field__label">Whisper model path</span>
+        <span className="field__label">Speech-to-text model</span>
         <input
           className="field__input"
-          value={draft.whisper_model_path}
-          onChange={(e) => set("whisper_model_path", e.target.value)}
-          placeholder="…/models/ggml-base.en.bin"
+          value={draft.stt_model}
+          onChange={(e) => set("stt_model", e.target.value)}
+          placeholder="whisper-tiny-en"
         />
+        <span className="field__hint">
+          Registry id of the STT model, e.g. <code>whisper-tiny-en</code> (bundled)
+          or <code>whisper-base-en</code> (optional download).
+        </span>
       </label>
 
       <label className="field">
