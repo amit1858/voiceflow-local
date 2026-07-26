@@ -72,17 +72,6 @@ impl AppState {
             .unwrap_or_else(|_| Settings::defaults(&self.model_dir))
     }
 
-    /// The directory holding speech-to-text models (`<models>/stt`).
-    pub fn stt_dir(&self) -> PathBuf {
-        self.model_dir.clone()
-    }
-
-    /// The directory holding text-to-speech voices (`<models>/tts`).
-    #[allow(dead_code)]
-    pub fn tts_dir(&self) -> PathBuf {
-        self.model_dir.clone()
-    }
-
     /// Build a transcription provider from the active settings. On a
     /// misconfigured Sherpa selection (unknown model id) we fail closed with a
     /// typed error rather than silently returning mock output.

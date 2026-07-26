@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   OUTPUT_MODES,
+  type ModelInfo,
   type RewriteKind,
   type Settings,
   type TranscriptionKind,
+  type TtsKind,
 } from "../lib/types";
 
 interface Props {
@@ -11,15 +13,38 @@ interface Props {
   onSave: (next: Settings) => Promise<void> | void;
   onClearTemp: () => Promise<void> | void;
   saving?: boolean;
+  /** Registered models/voices with installed state (for the download buttons). */
+  models?: ModelInfo[];
+  /** Download the model/voice with the given registry id. */
+  onDownload?: (id: string) => Promise<void> | void;
+  /** Registry id currently downloading (disables its button). */
+  downloadingId?: string | null;
+  /** Human progress label for the active download, e.g. "tiny.en-encoder 40%". */
+  downloadLabel?: string | null;
 }
 
 /** Settings form: providers, hotkey, defaults, model paths, auto-copy, and a
  * "Clear temp files" action. Edits a local draft, then persists on Save. */
-export function SettingsPanel({ settings, onSave, onClearTemp, saving }: Props) {
+export function SettingsPanel({
+  settings,
+  onSave,
+  onClearTemp,
+  saving,
+  models = [],
+  onDownload,
+  downloadingId,
+  downloadLabel,
+}: Props) {
   const [draft, setDraft] = useState<Settings>(settings);
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
+
+  const sttModels = useMemo(() => models.filter((m) => m.kind === "stt"), [models]);
+  const ttsVoices = useMemo(() => models.filter((m) => m.kind === "tts"), [models]);
+
+  const selectedStt = sttModels.find((m) => m.id === draft.stt_model);
+  const selectedVoice = ttsVoices.find((m) => m.id === draft.tts_voice);
 
   return (
     <div className="settings">
@@ -85,15 +110,90 @@ export function SettingsPanel({ settings, onSave, onClearTemp, saving }: Props) 
 
       <label className="field">
         <span className="field__label">Speech-to-text model</span>
-        <input
+        <select
           className="field__input"
           value={draft.stt_model}
           onChange={(e) => set("stt_model", e.target.value)}
-          placeholder="whisper-tiny-en"
-        />
+        >
+          {sttModels.length === 0 && (
+            <option value={draft.stt_model}>{draft.stt_model}</option>
+          )}
+          {sttModels.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.display_name} {m.bundled ? "(bundled)" : `(~${m.approx_mb} MB)`}
+              {m.installed ? " ✓" : ""}
+            </option>
+          ))}
+        </select>
         <span className="field__hint">
-          Registry id of the STT model, e.g. <code>whisper-tiny-en</code> (bundled)
-          or <code>whisper-base-en</code> (optional download).
+          The bundled tiny model works offline out of the box. Larger models are
+          optional downloads.
+          {selectedStt && !selectedStt.installed && onDownload && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="btn btn--link"
+                disabled={downloadingId === selectedStt.id}
+                onClick={() => void onDownload(selectedStt.id)}
+              >
+                {downloadingId === selectedStt.id
+                  ? downloadLabel ?? "Downloading…"
+                  : `Download ${selectedStt.display_name}`}
+              </button>
+            </>
+          )}
+        </span>
+      </label>
+
+      <label className="field">
+        <span className="field__label">Text-to-speech provider</span>
+        <select
+          className="field__input"
+          value={draft.tts_provider}
+          onChange={(e) => set("tts_provider", e.target.value as TtsKind)}
+        >
+          <option value="mock">Mock (beep, no model needed)</option>
+          <option value="sherpa">Local neural voice (sherpa-onnx)</option>
+        </select>
+      </label>
+
+      <label className="field">
+        <span className="field__label">Voice</span>
+        <select
+          className="field__input"
+          value={draft.tts_voice}
+          onChange={(e) => set("tts_voice", e.target.value)}
+          disabled={draft.tts_provider !== "sherpa"}
+        >
+          {ttsVoices.length === 0 && (
+            <option value={draft.tts_voice}>{draft.tts_voice}</option>
+          )}
+          {ttsVoices.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.display_name} {m.bundled ? "(bundled)" : `(~${m.approx_mb} MB)`}
+              {m.installed ? " ✓" : ""}
+            </option>
+          ))}
+        </select>
+        <span className="field__hint">
+          Used when the TTS provider is the local neural engine. The bundled
+          default voice works offline.
+          {selectedVoice && !selectedVoice.installed && onDownload && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="btn btn--link"
+                disabled={downloadingId === selectedVoice.id}
+                onClick={() => void onDownload(selectedVoice.id)}
+              >
+                {downloadingId === selectedVoice.id
+                  ? downloadLabel ?? "Downloading…"
+                  : `Download ${selectedVoice.display_name}`}
+              </button>
+            </>
+          )}
         </span>
       </label>
 
@@ -131,6 +231,17 @@ export function SettingsPanel({ settings, onSave, onClearTemp, saving }: Props) 
         />
         <span className="field__label">
           Auto-copy output to clipboard after processing
+        </span>
+      </label>
+
+      <label className="field field--checkbox">
+        <input
+          type="checkbox"
+          checked={draft.auto_speak}
+          onChange={(e) => set("auto_speak", e.target.checked)}
+        />
+        <span className="field__label">
+          Auto-speak the output aloud after processing (default off)
         </span>
       </label>
 

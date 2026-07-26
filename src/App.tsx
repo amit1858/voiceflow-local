@@ -16,9 +16,16 @@ import {
   onInputLevel,
   runHealthChecks,
   saveSettings,
+  speak,
+  stopSpeaking,
+  onTtsFinished,
+  listModels,
+  downloadModel,
+  onDownloadProgress,
 } from "./lib/ipc";
 import type {
   HealthCheck,
+  ModelInfo,
   OutputMode,
   PipelineResult,
   Settings,
@@ -35,6 +42,10 @@ export default function App() {
   const [copyError, setCopyError] = useState<VfError | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
+  const [speaking, setSpeaking] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadLabel, setDownloadLabel] = useState<string | null>(null);
 
   const [health, setHealth] = useState<HealthCheck[]>([]);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -87,6 +98,75 @@ export default function App() {
     if (recorder.state !== "recording") setInputLevel(0);
   }, [recorder.state]);
 
+  // Reset the Speak/Stop button when playback finishes naturally.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onTtsFinished(() => setSpeaking(false));
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Load the model/voice list (with installed state) for the Settings download UI.
+  const refreshModels = useCallback(async () => {
+    try {
+      setModels(await listModels());
+    } catch {
+      // Non-fatal: Settings falls back to showing the raw id.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  // Live download progress → a compact "<file> NN%" label on the active button.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onDownloadProgress((p) => {
+        const pct =
+          p.total && p.total > 0
+            ? ` ${Math.round((p.received / p.total) * 100)}%`
+            : "";
+        setDownloadLabel(
+          `${p.file} (${p.file_index + 1}/${p.file_count})${pct}`,
+        );
+      });
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handleDownload = useCallback(
+    async (id: string) => {
+      setCopyError(null);
+      setDownloadingId(id);
+      setDownloadLabel("Starting…");
+      try {
+        await downloadModel(id);
+        setToast("Download complete");
+        await refreshModels();
+      } catch (err) {
+        setCopyError(err as VfError);
+      } finally {
+        setDownloadingId(null);
+        setDownloadLabel(null);
+      }
+    },
+    [refreshModels],
+  );
+
   // The hotkey handler must always use the latest `mode`; the hook keeps the
   // handler in a ref so this closure stays current without re-subscribing.
   const handleToggle = useCallback(() => {
@@ -115,6 +195,39 @@ export default function App() {
     lastAutoCopied.current = res;
     void handleCopy(res.output);
   }, [recorder.result, settings?.auto_copy, handleCopy]);
+
+  // Speak the given text aloud (post-preview action, never in the pipeline).
+  const handleSpeak = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+    setCopyError(null);
+    try {
+      setSpeaking(true);
+      await speak(text);
+    } catch (err) {
+      setSpeaking(false);
+      setCopyError(err as VfError);
+    }
+  }, []);
+
+  const handleStopSpeaking = useCallback(async () => {
+    try {
+      await stopSpeaking();
+    } catch {
+      // Best-effort; ignore stop errors.
+    } finally {
+      setSpeaking(false);
+    }
+  }, []);
+
+  // Auto-speak the output after processing when enabled (default off).
+  const lastAutoSpoken = useRef<PipelineResult | null>(null);
+  useEffect(() => {
+    if (!settings?.auto_speak) return;
+    const res = recorder.result;
+    if (!res || res === lastAutoSpoken.current) return;
+    lastAutoSpoken.current = res;
+    void handleSpeak(res.output);
+  }, [recorder.result, settings?.auto_speak, handleSpeak]);
 
   // Stamp each new pipeline result with a time + run counter.
   useEffect(() => {
@@ -261,6 +374,9 @@ export default function App() {
             <PreviewPane
               result={recorder.result}
               onCopy={handleCopy}
+              onSpeak={handleSpeak}
+              onStopSpeaking={handleStopSpeaking}
+              speaking={speaking}
               onClear={() => {
                 recorder.clearResult();
                 setRunLabel(null);
@@ -279,6 +395,10 @@ export default function App() {
               onSave={handleSaveSettings}
               onClearTemp={handleClearTemp}
               saving={savingSettings}
+              models={models}
+              onDownload={handleDownload}
+              downloadingId={downloadingId}
+              downloadLabel={downloadLabel}
             />
           ) : (
             <p>Loading settings…</p>

@@ -75,6 +75,7 @@ pub fn run() {
             commands::speak,
             commands::stop_speaking,
             commands::list_voices,
+            commands::list_models,
             commands::download_model,
             commands::get_capabilities,
         ])

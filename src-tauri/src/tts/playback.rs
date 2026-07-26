@@ -40,8 +40,12 @@ impl Drop for ActivePlayback {
 
 /// Play `audio` on the default output device. Returns once playback has begun
 /// (or fails fast with a typed error if there is no output device). Audio
-/// continues on a background thread until it finishes or is stopped.
-pub fn play(audio: Synthesized) -> Result<ActivePlayback, VfError> {
+/// continues on a background thread until it finishes or is stopped;
+/// `on_finished` is invoked when playback drains naturally (not when stopped).
+pub fn play<F>(audio: Synthesized, on_finished: F) -> Result<ActivePlayback, VfError>
+where
+    F: FnOnce() + Send + 'static,
+{
     use rodio::buffer::SamplesBuffer;
     use rodio::{OutputStream, Sink};
 
@@ -72,12 +76,19 @@ pub fn play(audio: Synthesized) -> Result<ActivePlayback, VfError> {
         let _ = ready_tx.send(Ok(()));
 
         // Poll until the queue drains or a stop is requested.
+        let mut stopped = false;
         while !sink.empty() {
             if stop_thread.load(Ordering::Relaxed) {
                 sink.stop();
+                stopped = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Fire the completion callback only on a natural finish.
+        if !stopped {
+            on_finished();
         }
     });
 

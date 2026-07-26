@@ -233,7 +233,7 @@ pub fn clear_temp_files() -> Result<usize, VfError> {
 /// output device. This is a **post-preview** action (Speak / auto-speak) and is
 /// never part of `run_pipeline`. Any currently-playing audio is stopped first.
 #[tauri::command]
-pub async fn speak(state: State<'_, AppState>, text: String) -> Result<(), VfError> {
+pub async fn speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), VfError> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err(VfError::TtsSynthFailed {
@@ -247,7 +247,10 @@ pub async fn speak(state: State<'_, AppState>, text: String) -> Result<(), VfErr
 
     // Stop any prior playback, then start the new one.
     stop_playback(&state)?;
-    let handle = crate::tts::playback::play(audio)?;
+    let emit_app = app.clone();
+    let handle = crate::tts::playback::play(audio, move || {
+        let _ = emit_app.emit("tts-finished", ());
+    })?;
     let mut guard = state
         .playback
         .lock()
@@ -267,6 +270,13 @@ pub fn stop_speaking(state: State<'_, AppState>) -> Result<(), VfError> {
 pub fn list_voices(state: State<'_, AppState>) -> Result<Vec<crate::tts::Voice>, VfError> {
     let provider = state.tts_provider()?;
     Ok(provider.list_voices())
+}
+
+/// List every registered model/voice with its installed state (for the
+/// Settings download UI).
+#[tauri::command]
+pub fn list_models(state: State<'_, AppState>) -> Result<Vec<crate::models::ModelInfo>, VfError> {
+    Ok(crate::models::list_models(&state.model_dir))
 }
 
 /// Download the model/voice with registry id `id`, emitting "download-progress"

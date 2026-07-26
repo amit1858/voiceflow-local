@@ -9,6 +9,7 @@ import {
   type Capabilities,
   type DownloadProgress,
   type HealthCheck,
+  type ModelInfo,
   type OutputMode,
   type PipelineResult,
   type Settings,
@@ -150,6 +151,15 @@ export async function listVoices(): Promise<Voice[]> {
   }
 }
 
+/** List every registered model/voice with installed state (Settings download UI). */
+export async function listModels(): Promise<ModelInfo[]> {
+  try {
+    return await invoke<ModelInfo[]>("list_models");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
 /** Download the model/voice with registry id `id`. Progress via `onDownloadProgress`. */
 export async function downloadModel(id: string): Promise<void> {
   try {
@@ -196,4 +206,9 @@ export async function onDownloadProgress(
   handler: (progress: DownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<DownloadProgress>("download-progress", (e) => handler(e.payload));
+}
+
+/** Subscribe to the backend "tts-finished" event (playback drained naturally). */
+export async function onTtsFinished(handler: () => void): Promise<UnlistenFn> {
+  return listen("tts-finished", () => handler());
 }
