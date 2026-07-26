@@ -121,12 +121,16 @@ fn run_sherpa_tts(
     text: &str,
 ) -> Result<Synthesized, VfError> {
     use sherpa_rs::tts::{VitsTts, VitsTtsConfig};
+    use sherpa_rs::OnnxConfig;
 
     let config = VitsTtsConfig {
         model: model.to_string_lossy().to_string(),
         tokens: tokens.to_string_lossy().to_string(),
         lexicon: lexicon.to_string_lossy().to_string(),
-        num_threads: 2,
+        onnx_config: OnnxConfig {
+            num_threads: 2,
+            ..Default::default()
+        },
         ..Default::default()
     };
 

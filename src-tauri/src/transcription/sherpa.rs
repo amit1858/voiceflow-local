@@ -132,7 +132,7 @@ fn run_sherpa(
     let mut recognizer = WhisperRecognizer::new(config)
         .map_err(|e| VfError::ModelLoadFailed { detail: e.to_string() })?;
 
-    let result = recognizer.transcribe(sample_rate, samples);
+    let result = recognizer.transcribe(sample_rate, &samples);
     Ok(result.text.trim().to_string())
 }
 

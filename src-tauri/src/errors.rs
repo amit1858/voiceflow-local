@@ -40,14 +40,17 @@ pub enum VfError {
     NoSpeechDetected { detail: String },
 
     // ---- Speech engine / transcription ---------------------------------
+    // Constructed only in the mock-only build (the `not(feature="sherpa")`
+    // provider stubs); allow it unconditionally so the sherpa build is clean.
     #[error("The local speech engine is not available in this build")]
+    #[allow(dead_code)]
     SpeechEngineUnavailable { detail: String },
 
     #[error("The local speech model file is missing")]
     ModelMissing { expected_path: String, hint: String },
 
     #[error("The speech model file is invalid or unreadable")]
-    #[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
+    #[allow(dead_code)]
     ModelInvalid { detail: String },
 
     #[error("Failed to load the speech model")]
