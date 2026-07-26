@@ -2,16 +2,48 @@
 
 **Local-first voice-to-clipboard desktop assistant.** Press a global hotkey,
 speak, press it again, and get polished text on your clipboard — transcribed and
-rewritten entirely on your own machine. Windows-first. Built with **Tauri v2 +
-React + TypeScript** with a **Rust** backend.
+rewritten entirely on your own machine. You can also have the result **read back
+aloud** with a local neural voice. Windows-first. Built with **Tauri v2 + React +
+TypeScript** with a **Rust** backend.
 
 No cloud. No API keys. No transcript history. No database. Nothing is sent
 anywhere, and the temporary audio file is deleted after every use.
 
-> **Mock-first:** a fresh checkout runs the whole record → transcribe → rewrite
-> → preview → copy workflow **with zero local models installed**, using
-> deterministic mock providers. Install Whisper and Foundry Local later and flip
-> a setting to switch to real local inference.
+> **Mock-first:** a fresh checkout runs the whole record → transcribe → rewrite →
+> preview → copy (→ speak) workflow **with zero setup**, using deterministic mock
+> providers. The packaged build additionally ships a tiny real STT model and a
+> default neural TTS voice so **real speech-to-text and text-to-speech work out of
+> the box — with no C/C++ build toolchain required.**
+
+---
+
+## What's new in v2
+
+- **Real local STT that actually works out of the box.** v1's local transcription
+  required compiling whisper.cpp from source (CMake + MSVC C++ + a specific
+  libclang) and the default build silently fell back to a canned mock. v2 replaces
+  that with **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** via the
+  **[`sherpa-rs`](https://crates.io/crates/sherpa-rs)** crate. Its
+  `download-binaries` feature fetches **prebuilt** ONNX Runtime + sherpa-onnx
+  native libraries, so **end users need no CMake / C++ / libclang**.
+- **Local neural text-to-speech.** A new `TtsProvider` trait with a mock voice
+  (default) and a sherpa-onnx VITS voice. A **Speak / Stop** button on the preview
+  reads the output aloud, and an **auto-speak** setting (default **off**) can speak
+  automatically after processing.
+- **Model manager.** A tiny STT model and one TTS voice are **bundled** for offline
+  first run; larger STT models and extra voices are **optional, checksum-verified
+  downloads** with live progress in Settings.
+- **Audio guard.** A quick tap or a silent mic now returns a clear typed message
+  (*recording too short* / *no speech detected*) instead of an empty transcript,
+  and a **live input-level meter** shows your mic is being heard.
+- **Capability badge + honest health checks.** The header shows whether the running
+  build has the **real speech engine** or is **mock-only**, so selecting a local
+  provider is never a silent trap.
+
+The **Foundry Local + `phi-4-mini-instruct`** rewrite path is unchanged. Foundry /
+Phi is a **text LLM** and is used **only** for the rewrite step — it does not (and
+cannot) do speech-to-text or text-to-speech; those use dedicated ONNX speech
+models.
 
 ---
 
@@ -19,17 +51,18 @@ anywhere, and the temporary audio file is deleted after every use.
 
 VoiceFlow Local turns spoken words into clean, ready-to-paste text:
 
-1. Press the global hotkey (**`Ctrl+Shift+Space`** by default) to start
-   recording. A visible indicator shows you're live.
+1. Press the global hotkey (**`Ctrl+Shift+Space`** by default) to start recording.
+   A visible indicator and a live level meter show you're being heard.
 2. Press it again to stop.
 3. The app captures your mic to a temporary 16 kHz mono WAV in the OS temp dir.
-4. It **transcribes locally** (mock provider by default; whisper.cpp via
-   `whisper-rs` when enabled).
+4. It **transcribes locally** (mock provider by default; sherpa-onnx Whisper when
+   selected).
 5. It **rewrites locally** into your selected output mode (mock provider by
    default; **Microsoft Foundry Local** running **`phi-4-mini-instruct`** when
    enabled).
-6. You see an **editable preview**. Edit if you like, then click **Copy**
-   (or enable auto-copy). The temporary WAV is deleted.
+6. You see an **editable preview**. Edit if you like, then click **Copy** (or
+   enable auto-copy). Optionally click **Speak** to hear it. The temporary WAV is
+   deleted.
 
 ### Output modes
 
@@ -48,8 +81,8 @@ filter and the style is also injected into the rewrite model's system prompt:
 
 - Simple, polished English; crisp and practical.
 - Warm but professional; collaborative.
-- **Never** the word "kindly" (stripped/replaced by a post-filter *and*
-  forbidden in the prompt).
+- **Never** the word "kindly" (stripped/replaced by a post-filter *and* forbidden
+  in the prompt).
 - Avoid overly formal or escalatory tone unless explicitly requested.
 - Pastes cleanly into Teams, Outlook, OneNote, a PRD, or leadership notes.
 
@@ -57,67 +90,153 @@ filter and the style is also injected into the rewrite model's system prompt:
 
 ## Mock mode vs local mode
 
-Both providers are selected independently in **Settings**, and both default to
+Each provider is selected independently in **Settings**, and all default to
 **Mock**.
 
 | | Mock (default) | Local |
 | --- | --- | --- |
-| **Transcription** | `MockTranscriptionProvider` — returns a deterministic sample transcript. No model required. | `LocalWhisperTranscriptionProvider` — whisper.cpp via `whisper-rs`, loads a local GGML model. |
-| **Rewrite** | `MockRewriteProvider` — deterministic, applies mode formatting + style rules. No model required. | `FoundryLocalRewriteProvider` — Foundry Local + `phi-4-mini-instruct` over an OpenAI-compatible REST API. |
+| **Transcription** | `MockTranscriptionProvider` — deterministic sample transcript. No model. | `SherpaSttProvider` — sherpa-onnx Whisper ONNX model from the app-data models dir. |
+| **Rewrite** | `MockRewriteProvider` — deterministic mode formatting + style rules. No model. | `FoundryLocalRewriteProvider` — Foundry Local + `phi-4-mini-instruct` over an OpenAI-compatible REST API. |
+| **Text-to-speech** | `MockTtsProvider` — a short synthesized beep. No model. | `SherpaTtsProvider` — sherpa-onnx VITS voice (bundled `vits-ljs` or a selected one). |
 
-Mock mode exists so the full UI and workflow can be validated end-to-end before
-any models are installed. Switch each provider to its local implementation in
-**Settings** once you've set the models up (see below), and use the **Health**
-tab to confirm everything is ready.
+Mock mode exists so the full UI and workflow can be validated end-to-end with zero
+setup. Switch each provider to its local implementation in **Settings**, and use
+the **Health** tab and the header **capability badge** to confirm the real engine
+is present.
 
 ---
 
-## Validation matrix
+## The speech engine (sherpa-onnx)
 
-Three ways to run the app, from zero-setup to fully local. Pick columns left to
-right as you install more.
+STT and TTS are both served by **sherpa-onnx**, linked through the `sherpa-rs`
+crate behind an **opt-in `sherpa` Cargo feature**:
 
-| | **Mock mode** (default) | **Local Whisper mode** | **Full local** (Whisper + Foundry/Phi) |
-| --- | --- | --- | --- |
-| **Providers** | Transcription = Mock<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Mock | Transcription = Local Whisper<br>Rewrite = Foundry Local |
-| **Prerequisites** | Rust + Node 18+.<br>No CMake, libclang, models, or Foundry. | Mock prereqs **plus** CMake, MSVC "Desktop development with C++", and libclang.<br>GGML model at `%APPDATA%\com.voiceflow.local\models\ggml-base.en.bin`. | Local Whisper prereqs **plus** Foundry Local installed, service running, and `phi-4-mini-instruct` downloaded + loaded. |
-| **Setup / commands** | `npm install`<br>`npm run tauri:dev` *(mock is the default — no native toolchain)* | `./scripts/check-native-build-prereqs.ps1`<br>`npm run tauri:dev:whisper`<br>Settings → Transcription = **Local Whisper** | `winget install Microsoft.FoundryLocal`<br>`foundry service start`<br>`foundry model download phi-4-mini-instruct`<br>`foundry model load phi-4-mini-instruct`<br>`./scripts/check-local-models.ps1`<br>`./scripts/smoke-test-foundry.ps1`<br>`npm run tauri:dev:whisper`, then Settings → both providers **Local** and run the **Health** tab |
-| **Expected result** | Full hotkey → record → deterministic transcript → deterministic rewrite (mode formatting + style rules) → editable preview → copy. | Real speech → **real** transcript → deterministic mock rewrite → editable preview → copy. | Real speech → real transcript → **Phi** rewrite per output mode (Teams/Email/Product note/Exec summary) → editable preview → copy. No-"kindly" enforced. |
-| **Known caveats** | Transcript & rewrite are canned/deterministic (no real ASR/LLM). Mic is still used if present; a missing mic is flagged in Health. | Native build needs CMake + MSVC C++ **and a stable libclang (LLVM 17.x/18.x)** — a very new libclang (20+/trunk) fails with an `E0080 whisper_full_params` error. First model load is slow; English model by default. | Foundry port is **dynamic** (discovered via `foundry service status`, never hardcoded); models need extra disk/RAM. **Not yet live-validated end-to-end — tracked in the v3 follow-up issue.** |
+- **Default / mock build** (`npm run tauri dev`, `cargo check`) links **no** native
+  speech engine — it needs only the Tauri/Rust prerequisites and runs entirely in
+  mock mode. This is what CI and a fresh clone build.
+- **Real-engine build** (`--features sherpa`) pulls in `sherpa-rs` with its
+  `download-binaries` + `tts` features, which **download prebuilt** ONNX Runtime +
+  sherpa-onnx DLLs at build time. **No CMake, no C++ compiler, and no libclang are
+  required from end users** — the prebuilt binaries are linked directly.
+
+Because the engine is behind a feature and a capability check, selecting a local
+provider on a mock-only build never silently fakes success: you get a typed
+`SpeechEngineUnavailable` error and the header badge reads **"Speech engine:
+mock-only."**
+
+Provider APIs used:
+
+- **STT:** `sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer}` with the
+  model's `encoder` / `decoder` / `tokens` files.
+- **TTS:** `sherpa_rs::tts::{VitsTts, VitsTtsConfig}` with the voice's `model` /
+  `tokens` / `lexicon` files. Synthesized audio is played through
+  [`rodio`](https://crates.io/crates/rodio).
+
+---
+
+## Models: bundling + optional downloads
+
+Models live under the app-data models dir, split by kind:
+
+```
+%APPDATA%\com.voiceflow.local\models\stt\<id>\...
+%APPDATA%\com.voiceflow.local\models\tts\<id>\...
+```
+
+Built-in registry (`src-tauri/src/models/mod.rs`):
+
+| Id | Kind | Bundled | ~Size | Notes |
+| --- | --- | --- | --- | --- |
+| `whisper-tiny-en` | STT | ✅ default | ~100 MB | Fast English STT. Ships for offline first run. |
+| `whisper-base-en` | STT | optional | ~155 MB | More accurate English STT. Download on demand. |
+| `vits-ljs` | TTS | ✅ default | ~115 MB | Natural English neural voice. Ships for offline first run. |
+
+**Hybrid delivery.** Bundled models make first run work fully offline. Additional
+models are **optional downloads** streamed with progress events and (when a
+checksum is pinned) verified with SHA-256; a mismatch is rejected with a typed
+`ModelChecksumMismatch`. Download from **Settings → Download** (per model), or with
+the `download_model(id)` command. Downloads write to a `.part` file and are renamed
+into place only on success.
+
+> **Models and DLLs are never committed to git.** They are fetched into the app-data
+> dir at runtime (via the in-app downloads / `setup-local-models.ps1`) and into
+> `src-tauri/resources/models` at **package time**. `.gitignore` keeps `*.onnx`,
+> `*.bin`, `tokens.txt`, `lexicon.txt`, voice dirs, and `*.dll` out of the repo. The
+> Rust *source* module `src-tauri/src/models/` is code, not data, and stays tracked.
+
+---
+
+## Text-to-speech (Speak + auto-speak)
+
+TTS is a **post-preview action** — it is **never** part of `run_pipeline`, so
+processing latency is unaffected and nothing is spoken unless you ask for it.
+
+- **Speak / Stop** button on the preview reads the current (possibly edited) output
+  aloud via the selected TTS provider.
+- **Auto-speak** (Settings, default **off**) speaks the output automatically once
+  processing completes.
+- Commands: `speak(text)`, `stop_speaking`, `list_voices`. The backend emits a
+  `tts-finished` event when playback drains naturally so the UI can reset the Speak
+  button.
+- Typed errors (`TtsVoiceMissing`, `TtsSynthFailed`, `TtsPlaybackFailed`,
+  `SpeechEngineUnavailable`) map to friendly messages. Mock TTS always works (a
+  short beep), so the flow can be validated with no voice installed.
+
+---
+
+## Audio guard + live level
+
+The capture path (`src-tauri/src/audio/recorder.rs`) enforces a **minimum duration**
+and a **silence/level threshold** *after* resampling to 16 kHz mono, independent of
+the transcription provider:
+
+- Too short → typed `RecordingTooShort`.
+- Long enough but effectively silent → typed `NoSpeechDetected`.
+
+Both surface as clear banners instead of an empty transcript. A live **input-level**
+value (mic RMS, ~10×/s) is emitted as an `input-level` event and drives the meter in
+the recording indicator. The existing RAII temp-WAV cleanup is unchanged.
 
 ---
 
 ## Architecture
 
-All provider logic lives in Rust behind async traits, so cloud providers can be
-added later without touching the UI or pipeline:
+All provider logic lives in Rust behind async traits, so providers can be swapped
+(or cloud ones added later) without touching the UI or pipeline:
 
-- `TranscriptionProvider` → `MockTranscriptionProvider`,
-  `LocalWhisperTranscriptionProvider` (`whisper-rs`).
+- `TranscriptionProvider` → `MockTranscriptionProvider`, `SherpaSttProvider`.
 - `RewriteProvider` → `MockRewriteProvider`, `FoundryLocalRewriteProvider`
   (Foundry Local CLI bridge + OpenAI-compatible REST on a **dynamic** localhost
   port, discovered by parsing `foundry service status` — never hardcoded).
+- `TtsProvider` → `MockTtsProvider`, `SherpaTtsProvider` (VITS via sherpa-onnx,
+  played through `rodio`).
 
-Providers are built **per request** from the current settings, so switching in
-the UI takes effect immediately.
+Providers are built **per request** from the current settings, so switching in the
+UI takes effect immediately.
 
 ```
 src/                     React + TypeScript frontend
-  components/            RecordingIndicator, OutputModePicker, PreviewPane (editable),
-                         ErrorBanner, SettingsPanel, HealthPanel, PrivacyNote, Toast
+  components/            RecordingIndicator (+ level meter), OutputModePicker,
+                         PreviewPane (editable + Speak/Stop), ErrorBanner,
+                         SettingsPanel (STT/TTS/download/auto-speak), HealthPanel,
+                         PrivacyNote, Toast
   hooks/                 useRecorder, useHotkeyStatus
-  lib/                   ipc.ts (typed invoke wrappers), types.ts
+  lib/                   ipc.ts (typed invoke wrappers + event listeners), types.ts
 src-tauri/               Rust backend
   src/
     commands.rs          Tauri command handlers (IPC surface)
-    state.rs             Shared app state + per-request provider factories
+    state.rs             Shared app state + per-request provider factories + playback
     settings.rs          Settings persistence + provider selection (mock-first)
-    health.rs            Typed health checks (mic, temp, whisper, foundry)
+    health.rs            Typed health + capability checks (mic, temp, STT, TTS,
+                         audio output, foundry)
     errors.rs            VfError enum → friendly UI messages
-    pipeline.rs          transcribe → rewrite → style filter
-    audio/               recorder.rs (cpal), wav.rs (hound), temp.rs (RAII cleanup)
-    transcription/       mod.rs (trait), mock.rs, whisper_cpp.rs
+    pipeline.rs          transcribe → rewrite → style filter (TTS is NOT in here)
+    models/              Model registry, presence, checksum, progress downloads
+    audio/               recorder.rs (cpal + guard + level), wav.rs (hound),
+                         temp.rs (RAII cleanup)
+    transcription/       mod.rs (trait), mock.rs, sherpa.rs
     rewrite/             mod.rs (trait + OutputMode), mock.rs, foundry_local.rs, style.rs
+    tts/                 mod.rs (trait), mock.rs, sherpa.rs, playback.rs (rodio)
 scripts/                 setup-local-models.ps1, check-local-models.ps1,
                          check-native-build-prereqs.ps1, smoke-test-foundry.ps1
 ```
@@ -131,11 +250,10 @@ npm install
 npm run tauri dev
 ```
 
-That's it. Both providers default to Mock and **the `whisper` feature is off by
+That's it. All providers default to Mock and the `sherpa` feature is **off by
 default**, so a fresh checkout builds and runs the full record → process → edit →
-copy loop with **no CMake, libclang, or models** — just the Tauri/Rust
-prerequisites. Enable real local transcription later with `--features whisper`
-(see below).
+copy → speak loop with **no CMake, libclang, or models** — just the Tauri/Rust
+prerequisites. Enable the real speech engine with `--features sherpa` (see below).
 
 To type-check / build just the frontend:
 
@@ -145,7 +263,7 @@ npm run build
 
 ---
 
-## Setup for local mode
+## Setup for real local speech
 
 ### 1. Prerequisites
 
@@ -154,36 +272,41 @@ npm run build
 - **Tauri v2 system prerequisites** for Windows —
   <https://tauri.app/start/prerequisites/>:
   - **Microsoft Visual Studio C++ Build Tools** (the "Desktop development with
-    C++" workload), which provides the MSVC compiler and linker.
+    C++" workload) for the MSVC linker used to build the Rust app itself.
   - **WebView2** runtime (preinstalled on Windows 11; installable on Windows 10).
-- **CMake** and a **C/C++ compiler** — required only to build the bundled
-  whisper.cpp used by `whisper-rs` (i.e. the `whisper` Cargo feature). Install
-  CMake from <https://cmake.org/download/> (or the Visual Studio "C++ CMake
-  tools" component) and make sure `cmake` is on your `PATH`.
-- **libclang** — required by `bindgen` (used by `whisper-rs-sys`) to generate the
-  whisper.cpp FFI bindings. Install a **stable LLVM (17.x or 18.x)** from
-  <https://releases.llvm.org/> (or the Visual Studio **"C++ Clang tools for
-  Windows"** component) and, if it isn't auto-detected, point `LIBCLANG_PATH` at
-  the folder containing `libclang.dll`.
-  > ⚠️ **Use a stable libclang.** A very new libclang (LLVM **20+ / trunk**, e.g.
-  > clang 22) mis-parses the whisper.cpp headers and the build fails with
-  > `error[E0080]: attempt to compute 1_usize - 264_usize ... whisper_full_params`.
-  > `winget install LLVM.LLVM --version 18.1.8` (or download 17.x/18.x) fixes it.
 
-Run the preflight script to check all of the above at once (it also warns if your
-libclang is too new):
+> **No speech toolchain needed.** Unlike v1, the real speech engine does **not**
+> require CMake or libclang: `--features sherpa` downloads **prebuilt** ONNX
+> Runtime + sherpa-onnx DLLs. You only need the standard MSVC linker that any Rust
+> Windows build uses.
+
+### 2. Build with the real engine (optional)
 
 ```powershell
-./scripts/check-native-build-prereqs.ps1
+npm run tauri:dev:sherpa      # dev
+npm run tauri:build:sherpa    # release + installers
 ```
 
-> **Build note:** mock mode is the default and needs no native toolchain
-> (`cargo check` / `npm run tauri:dev`). The **`whisper` feature is opt-in**:
-> build real local transcription with `cargo check --features whisper` (or
-> `npm run tauri:dev:whisper`). Without it, the local Whisper provider is
-> unavailable and health reports it as skipped — mock transcription still works.
+The first `--features sherpa` build downloads the prebuilt speech-engine DLLs
+(cached afterwards).
 
-### 2. Install Microsoft Foundry Local
+### 3. Get the speech models
+
+Easiest: run the app and use **Settings → Download** for the STT model and TTS
+voice you want (live progress, checksum-verified). Or script it:
+
+```powershell
+# Downloads the tiny STT model + default TTS voice into the app-data dir,
+# and (optionally) prepares Foundry + Phi for rewrite.
+./scripts/setup-local-models.ps1
+
+# Validate readiness and print PASS/FAIL (mirrors the in-app Health tab):
+./scripts/check-local-models.ps1
+```
+
+Neither script commits models or secrets.
+
+### 4. Install Microsoft Foundry Local (rewrite — optional)
 
 ```powershell
 winget install Microsoft.FoundryLocal
@@ -192,82 +315,65 @@ foundry model download phi-4-mini-instruct
 foundry model load phi-4-mini-instruct
 ```
 
-Foundry Local serves an OpenAI-compatible API on a dynamically-assigned
-localhost port. VoiceFlow discovers it by parsing `foundry service status`, so
-you never configure a port. (You can set a manual endpoint override in Settings
-for debugging.)
-
-### 3. Get the Whisper model
-
-Download a GGML English model — **`ggml-base.en.bin`** is a good default — from
-the whisper.cpp model repository:
-
-<https://huggingface.co/ggerganov/whisper.cpp>
-
-Place it in the app's data directory under `models/`:
-
-```
-%APPDATA%\com.voiceflow.local\models\ggml-base.en.bin
-```
-
-If the file is missing, the app does **not** crash — it shows an error banner
-(and a failing health check) with the exact expected path and a download hint.
-
-### 4. Helper scripts
-
-```powershell
-# Guided setup: checks prereqs, prepares Foundry + Phi, checks the model folder.
-./scripts/setup-local-models.ps1
-
-# Validate readiness and print PASS/FAIL (mirrors the in-app Health tab).
-./scripts/check-local-models.ps1
-```
-
-Neither script downloads Whisper weights automatically, and neither commits
-models or secrets.
+Foundry Local serves an OpenAI-compatible API on a dynamically-assigned localhost
+port. VoiceFlow discovers it by parsing `foundry service status`, so you never
+configure a port. (A manual endpoint override is available in Settings for
+debugging.) Without Foundry, non-Raw modes fall back to the mock rewriter.
 
 ### 5. Switch to local providers
 
-Open **Settings**, set **Transcription provider** to *Local Whisper* and/or
-**Rewrite provider** to *Foundry Local*, save, then open the **Health** tab and
-run the checks.
+Open **Settings** and set:
+
+- **Transcription provider** → *Sherpa (local)* and pick an **STT model**.
+- **TTS provider** → *Sherpa (local)* and pick a **voice**; toggle **auto-speak**
+  if you want.
+- **Rewrite provider** → *Foundry Local* (optional).
+
+Save, then open the **Health** tab and run the checks. The header badge should show
+the active providers plus **"Speech engine: real."**
 
 ---
 
-## Health checks
+## Health checks + capability badge
 
 The **Health** tab (and `run_health_checks` command) reports typed pass/fail for:
 
 - Temp audio folder writable
 - Microphone available
-- Whisper model exists (and loads, in `whisper`-enabled builds)
-- Foundry Local installed
-- Foundry service running
-- Foundry dynamic port discovered
-- Phi model available
-- Foundry chat-completion smoke test
+- **STT model present & loads** (in `sherpa`-enabled builds; a tiny recognition
+  smoke test)
+- **TTS voice present & synthesizes** a tiny sample
+- **Audio output device available**
+- Foundry Local installed / service running / dynamic port discovered / Phi model
+  available / chat-completion smoke test
 
-Checks that don't apply to your current settings (e.g. Foundry checks while in
-mock mode) are reported as **skipped**.
+Checks that don't apply to your current settings are reported as **skipped**. The
+header **capability badge** independently shows whether the running build even
+contains the real speech engine, so an unavailable provider is surfaced up front
+rather than failing silently at runtime.
 
 ---
 
 ## Privacy model
 
-- **All local.** Transcription and rewriting run entirely on your machine.
-- **No cloud, no API keys** in v1.
-- **No database, no history.** Transcripts live in memory only and are never
-  persisted. Only your preferences are stored (in `settings.json`).
+- **All local.** Transcription, rewriting, and speech synthesis run entirely on
+  your machine.
+- **No cloud, no API keys.**
+- **No database, no history.** Transcripts and synthesized audio live in memory
+  only and are never persisted. Only your preferences are stored (in
+  `settings.json`).
 - **Temporary audio is deleted** after processing — on success *and* on error
-  paths — via an RAII guard (`Drop`) plus explicit cleanup. The WAV lives only
-  in the OS temp dir as `voiceflow-<uuid>.wav` for the duration of processing.
+  paths — via an RAII guard (`Drop`) plus explicit cleanup. The WAV lives only in
+  the OS temp dir as `voiceflow-<uuid>.wav` for the duration of processing.
   Settings → **Clear temp files** removes any stragglers.
 - **No telemetry.**
-- **No auto-send.** Text reaches the clipboard only when you click **Copy** (or
-  when you explicitly enable auto-copy, which is **off** by default).
+- **No auto-send.** Text reaches the clipboard only when you click **Copy** (or when
+  you explicitly enable auto-copy, which is **off** by default). Nothing is spoken
+  unless you click **Speak** or explicitly enable **auto-speak** (also **off** by
+  default).
 - **Enterprise note:** for confidential or regulated work, only use approved
-  enterprise endpoints and follow your organization's data-handling policies.
-  The app shows this reminder in-product too.
+  enterprise endpoints and follow your organization's data-handling policies. The
+  app shows this reminder in-product too.
 
 ---
 
@@ -275,185 +381,90 @@ mock mode) are reported as **skipped**.
 
 - **Windows 10 or 11** (Windows-first; the code is portable but only tested on
   Windows).
-- A working **microphone** (and microphone permission for the app).
+- A working **microphone** (and microphone permission), plus an **audio output
+  device** for TTS playback.
 - Enough **disk and RAM** for local models (only when using local providers):
-  - Whisper `base.en` ≈ 140 MB on disk; larger models need more RAM.
-  - `phi-4-mini-instruct` via Foundry Local needs several GB of RAM/VRAM
-    depending on the runtime.
-- MSVC Build Tools + CMake to build native whisper from source (see Setup).
+  - STT `whisper-tiny-en` ≈ 100 MB, `whisper-base-en` ≈ 155 MB on disk.
+  - TTS `vits-ljs` ≈ 115 MB on disk.
+  - `phi-4-mini-instruct` via Foundry Local needs several GB of RAM/VRAM depending
+    on the runtime.
+- MSVC Build Tools to build the Rust app. **No CMake/libclang** needed for the
+  speech engine (prebuilt DLLs).
 
 ---
 
-## Limitations (v1)
+## Packaging (shipping the DLLs + bundled models)
 
-- **No transcript history** and no database.
-- **No cloud providers** — local only (the provider traits make adding them
-  later straightforward).
-- **No auto-send** — copy-to-clipboard only (auto-copy is opt-in).
-- **No always-on listening** — records only on explicit start, always with a
-  visible indicator.
-- **English Whisper model** by default (`ggml-base.en.bin`).
-- **Requires Foundry Local + `phi-4-mini-instruct`** for non-Raw modes when the
-  rewrite provider is set to Foundry Local. Mock rewrite works with no setup.
+To ship a self-contained installer that works offline on first run:
+
+1. **Build with the engine:** `npm run tauri:build:sherpa`. The first build
+   downloads the prebuilt ONNX Runtime + sherpa-onnx DLLs; make sure they are
+   included as resources / next to the executable so the app can load them at
+   runtime.
+2. **Stage the bundled models** into `src-tauri/resources/models/{stt,tts}/<id>/`
+   at package time (e.g. by running `./scripts/setup-local-models.ps1` pointed at
+   that dir, or a build step). The app copies/uses them on first run. **Do not
+   commit them** — they are git-ignored and fetched at package time.
+3. `tauri build --features sherpa` produces **NSIS** and **MSI** installers
+   (configured in `src-tauri/tauri.conf.json`). WebView2 is delivered via the
+   `downloadBootstrapper` install mode.
+
+```powershell
+npm run tauri:build:sherpa
+# Installers:
+#   src-tauri/target/release/bundle/nsis/*.exe
+#   src-tauri/target/release/bundle/msi/*.msi
+```
+
+> Run installer generation on a native **x64 Windows** host. Code signing is not
+> configured (unsigned installers trigger SmartScreen). The bundled icons are
+> placeholders — replace `src-tauri/icons/*` before a public release.
+
+---
+
+## Licensing & attribution
+
+- **sherpa-onnx** and **sherpa-rs** are Apache-2.0 licensed
+  (<https://github.com/k2-fsa/sherpa-onnx>,
+  <https://github.com/thewh1teagle/sherpa-rs>). The prebuilt ONNX Runtime is MIT
+  licensed. Include their license notices when redistributing the DLLs.
+- **STT models** (`sherpa-onnx-whisper-*`) are derived from OpenAI Whisper (MIT).
+- **TTS voice** `vits-ljs` is trained on the **LJ Speech** dataset (public domain).
+  Confirm the license/attribution of any additional voice you bundle before
+  shipping it.
+- Model files are hosted on Hugging Face by
+  [csukuangfj](https://huggingface.co/csukuangfj); see each model card for details.
+
+Keep these notices with any distributed build that includes the engine or models.
 
 ---
 
 ## Development notes
 
-- Rust unit tests cover the mock providers, the style post-filter, the Foundry
-  endpoint parser, and mock error mapping. Mock is the default build, so
-  `cargo test` runs them with no native toolchain. Add `--features whisper` to
-  also compile the native Whisper provider and its (ignored) smoke test.
+- Rust unit tests cover the mock STT/TTS/rewrite providers, the style post-filter,
+  the model-manager checksum verification, the audio-guard helper, the Foundry
+  endpoint parser, error mapping (including the new TTS/download errors), and that
+  selecting a local provider on a mock-only build returns
+  `SpeechEngineUnavailable`. Mock is the default build, so `cargo test` runs them
+  with **no native toolchain**. Add `--features sherpa` to also compile the
+  sherpa-backed providers.
 - The frontend is type-checked by `tsc` as part of `npm run build`.
-- Building the app in mock mode (`npm run tauri:dev` / `tauri build`) needs only
-  the Tauri/Rust prerequisites; CMake + libclang are needed only for the opt-in
-  `whisper` feature.
+- Building the app in mock mode (`npm run tauri:dev` / `tauri build`) needs only the
+  Tauri/Rust prerequisites; the speech engine's DLLs are fetched only for the opt-in
+  `sherpa` feature.
 
 ---
 
-## Native build & packaging (real local models)
+## Limitations
 
-The opt-in `whisper` Cargo feature compiles whisper.cpp from source and links it
-into the app, enabling the **Local Whisper** provider. This has been validated end
-to end:
-
-- `cargo check --features whisper` / `cargo test --features whisper` pass
-  (whisper.cpp compiles and links; all unit tests green).
-- A real transcription smoke test loads a GGML model and transcribes a known clip
-  (see the ignored `smoke` test in `src-tauri/src/transcription/whisper_cpp.rs`,
-  driven by the `WHISPER_SMOKE_MODEL` / `WHISPER_SMOKE_WAV` env vars):
-  ```powershell
-  cargo test --features whisper transcribes_known_clip -- --ignored --nocapture
-  ```
-- `tauri build --features whisper --no-bundle` produces an optimized release
-  binary (`voiceflow-local.exe`).
-
-> ⚠️ **libclang version matters.** Use a stable LLVM (**17.x/18.x**). A very new
-> libclang (20+/trunk) makes `whisper-rs-sys` fail to build with
-> `error[E0080]: attempt to compute 1_usize - 264_usize ... whisper_full_params`
-> — bindgen mis-parses the struct layout. `winget install LLVM.LLVM --version 18.1.8`
-> (and set `LIBCLANG_PATH`) resolves it. The preflight script warns about this.
-
-### Local Whisper validation walkthrough (Windows, step by step)
-
-A practical checklist to go from mock mode to **real speech-to-text** with the
-Local Whisper provider.
-
-**Expected default model path** (identifier `com.voiceflow.local`):
-
-```
-C:\Users\<user>\AppData\Roaming\com.voiceflow.local\models\ggml-base.en.bin
-```
-
-This is the default; **Settings → Whisper model path** can override it.
-
-#### 1. Install stable LLVM/libclang (17.x or 18.x)
-
-`whisper-rs-sys` builds through bindgen, and **LLVM/libclang 19+** can trigger the
-`E0080` overflow described above. Install a stable 17.x/18.x release:
-
-```powershell
-winget install LLVM.LLVM --version 18.1.8
-
-# Point the build at it (in the same shell you build from):
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-
-# Confirm it is an x64 DLL — the "machine" line must read 8664:
-dumpbin /headers "C:\Program Files\LLVM\bin\libclang.dll" | findstr machine
-```
-
-Run `./scripts/check-native-build-prereqs.ps1` first — it warns when the libclang
-major version is 19 or higher.
-
-#### 2. Download the GGML Whisper model
-
-```powershell
-$dir = "$env:APPDATA\com.voiceflow.local\models"
-New-Item -ItemType Directory -Force $dir
-
-# Default model (~142 MB):
-curl -L -o "$dir\ggml-base.en.bin" `
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
-```
-
-For a faster first smoke test, `ggml-tiny.en.bin` is smaller and quicker (lower
-accuracy). Model files are git-ignored — never commit them.
-
-#### 3. Build and run with the Whisper feature
-
-Use the **x64 Native Tools Command Prompt for VS 2022** (so `link.exe` and the x64
-MSVC libraries resolve), with `LIBCLANG_PATH` set as above:
-
-```powershell
-npm run tauri:dev:whisper
-```
-
-The first build compiles whisper.cpp via CMake — expect a few minutes.
-
-#### 4. Switch the app to Local Whisper
-
-1. Open **Settings → Transcription provider → Local Whisper**.
-2. Confirm the **Whisper model path** points at the file from step 2.
-3. Keep **Rewrite provider → Mock** for now, so you validate Whisper in isolation.
-4. **Save.** The header badge should read `Whisper · Mock rewrite`.
-
-#### 5. Run Health checks
-
-Open the **Health** tab and **Run checks**. For Whisper-only validation these
-should pass: *Whisper model exists & loads*, *temp audio folder writable*, and
-*microphone available*. The Foundry rows will fail — expected, since Foundry Local
-is not running yet.
-
-#### 6. Test real speech in Raw transcript mode
-
-Set output mode to **Raw transcript** (this bypasses rewrite), press
-**Ctrl+Shift+Space** (or click Start), speak a sentence, then stop. The preview
-should show your **actual words**, and the `Last processed at … · run #N` line
-updates each run. Click **Copy** and paste to confirm.
-
-#### Troubleshooting
-
-| Symptom | Cause & fix |
-| --- | --- |
-| **ModelMissing** error banner / failing health check | The model path or filename is wrong. Verify the file exists at the expected path and the name matches exactly (`ggml-base.en.bin`). |
-| **ModelLoadFailed** | The model file is corrupt or partially downloaded. Re-download it (check the file size). |
-| **`error[E0080]: attempt to compute 1_usize - 264_usize`** at build | libclang is 19+/trunk. Install LLVM 17.x/18.x and set `LIBCLANG_PATH` to it (see step 1). |
-| **`link.exe` not found** | You are not in the **x64 Native Tools Command Prompt for VS 2022**. Launch that shell (or run `vcvarsall.bat amd64`) and rebuild. |
-| **ARM64 vs x64 mismatch** (MSVC library conflicts, wrong-arch libclang) | Use the **x64** Rust toolchain (`stable-x86_64-pc-windows-msvc`), the **x64** VS tools shell, and an **x64** libclang (the `dumpbin` check must show `8664`). Building x64 under ARM64 emulation is supported but every tool must be x64. |
-
-### Build the release binary
-
-```powershell
-# Ensure native prereqs first (also checks the libclang version):
-./scripts/check-native-build-prereqs.ps1
-
-# Type-check + compile the optimized binary (no installer):
-npm run tauri:build:whisper -- --no-bundle
-```
-
-### Build a Windows installer
-
-`tauri build --features whisper` produces **NSIS** and **MSI** installers
-(configured in `src-tauri/tauri.conf.json` under `bundle.targets`). WebView2 is
-delivered via the `downloadBootstrapper` install mode, so the installer stays
-small and fetches the runtime on first launch if it's missing.
-
-```powershell
-npm run tauri:build:whisper
-# Installers are written to:
-#   src-tauri/target/release/bundle/nsis/*.exe
-#   src-tauri/target/release/bundle/msi/*.msi
-```
-
-> Installer generation should be run on a native **x64 Windows** host. Code signing
-> is not configured (unsigned installers trigger SmartScreen). The bundled icons are
-> placeholders — replace `src-tauri/icons/*` before a public release.
-
-### Foundry rewrite smoke test
-
-With Foundry Local installed and running, validate the Phi rewrite path per output
-mode (mirrors the in-app health check and the no-"kindly" post-filter):
-
-```powershell
-./scripts/smoke-test-foundry.ps1
-```
+- **No transcript history** and no database.
+- **No cloud providers** — local only (the provider traits make adding them later
+  straightforward).
+- **No auto-send** — copy-to-clipboard only (auto-copy is opt-in). Auto-speak is
+  opt-in too.
+- **No always-on listening** — records only on explicit start, always with a visible
+  indicator.
+- **English** bundled STT model and TTS voice by default; other languages require
+  downloading matching models.
+- **Rewrite** for non-Raw modes needs Foundry Local + `phi-4-mini-instruct`; mock
+  rewrite works with no setup.

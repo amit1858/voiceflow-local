@@ -1,28 +1,46 @@
 <#
 .SYNOPSIS
-    Prepare local models for VoiceFlow Local (optional — the app runs in mock
-    mode without any of this).
+    Prepare local speech models for VoiceFlow Local (optional - the app runs in
+    mock mode with zero setup, and the packaged build ships a tiny STT model and
+    a default TTS voice for offline first run).
 
 .DESCRIPTION
-    Checks prerequisites and guides you through getting the two local models:
-      * Microsoft Foundry Local + phi-4-mini-instruct (rewrite provider)
-      * A GGML Whisper model, e.g. ggml-base.en.bin (transcription provider)
+    The real speech path uses sherpa-onnx (via the sherpa-rs crate). The prebuilt
+    ONNX Runtime + sherpa-onnx native libraries are fetched automatically by the
+    Rust build when compiled with `--features sherpa` (no CMake / C++ / libclang
+    needed). This script only helps you place the *models*:
 
-    This script NEVER downloads Whisper weights for you (licensing/size) and
-    never commits models or secrets. It prints clear, copy-pasteable steps.
+      * STT (speech-to-text): a sherpa-onnx Whisper model
+          - whisper-tiny-en (bundled default, ~100 MB)
+          - whisper-base-en (optional, more accurate, ~155 MB)
+      * TTS (text-to-speech): a sherpa-onnx VITS voice
+          - vits-ljs (bundled default English voice, ~115 MB)
+      * Rewrite (unchanged): Microsoft Foundry Local + phi-4-mini-instruct
+
+    Models are stored under the app-data dir in per-model folders:
+        %APPDATA%\com.voiceflow.local\models\stt\<id>\...
+        %APPDATA%\com.voiceflow.local\models\tts\<id>\...
+
+    Normally you do NOT need this script: use the in-app Settings -> "Download"
+    buttons, which show progress and verify files. It is provided for offline /
+    scripted setup. It NEVER commits models or secrets.
 
 .NOTES
-    Safe to re-run. Read-only except for creating the models folder.
+    Safe to re-run (skips files already present). Downloads over HTTPS only.
 #>
 
 [CmdletBinding()]
 param(
-    # Where the Whisper GGML model should live. Defaults to the app data dir.
-    [string]$WhisperModelDir = (Join-Path $env:APPDATA "com.voiceflow.local\models"),
-    # Whisper model filename the app expects by default.
-    [string]$WhisperModelFile = "ggml-base.en.bin",
-    # Foundry model id.
-    [string]$FoundryModel = "phi-4-mini-instruct"
+    # Root of the app-data models dir.
+    [string]$ModelsRoot = (Join-Path $env:APPDATA "com.voiceflow.local\models"),
+    # STT model id to fetch (whisper-tiny-en | whisper-base-en).
+    [string]$SttModel = "whisper-tiny-en",
+    # TTS voice id to fetch (vits-ljs).
+    [string]$TtsVoice = "vits-ljs",
+    # Foundry rewrite model.
+    [string]$FoundryModel = "phi-4-mini-instruct",
+    # Skip model downloads (only do prereq + Foundry checks).
+    [switch]$SkipModels
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,8 +49,58 @@ function Write-Ok($t)   { Write-Host "  [OK]   $t" -ForegroundColor Green }
 function Write-Warn($t) { Write-Host "  [WARN] $t" -ForegroundColor Yellow }
 function Write-Info($t) { Write-Host "  [INFO] $t" -ForegroundColor Gray }
 
-Write-Head "Prerequisites"
+# Registry MUST mirror src-tauri/src/models/mod.rs REGISTRY.
+$Registry = @{
+    "whisper-tiny-en" = @{
+        Kind  = "stt"
+        Files = @(
+            @{ Name = "tiny.en-encoder.int8.onnx"; Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-encoder.int8.onnx" },
+            @{ Name = "tiny.en-decoder.int8.onnx"; Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-decoder.int8.onnx" },
+            @{ Name = "tiny.en-tokens.txt";        Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-tokens.txt" }
+        )
+    }
+    "whisper-base-en" = @{
+        Kind  = "stt"
+        Files = @(
+            @{ Name = "base.en-encoder.int8.onnx"; Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-encoder.int8.onnx" },
+            @{ Name = "base.en-decoder.int8.onnx"; Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-decoder.int8.onnx" },
+            @{ Name = "base.en-tokens.txt";        Url = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-tokens.txt" }
+        )
+    }
+    "vits-ljs" = @{
+        Kind  = "tts"
+        Files = @(
+            @{ Name = "vits-ljs.onnx"; Url = "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/vits-ljs.onnx" },
+            @{ Name = "tokens.txt";    Url = "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/tokens.txt" },
+            @{ Name = "lexicon.txt";   Url = "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/lexicon.txt" }
+        )
+    }
+}
 
+function Get-ModelInto($Id) {
+    $entry = $Registry[$Id]
+    if (-not $entry) { Write-Warn "Unknown model id '$Id' - skipping."; return }
+    $dir = Join-Path $ModelsRoot (Join-Path $entry.Kind $Id)
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    Write-Info "Target: $dir"
+    foreach ($f in $entry.Files) {
+        $dest = Join-Path $dir $f.Name
+        if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
+            Write-Ok "Present: $($f.Name)"
+            continue
+        }
+        Write-Info "Downloading $($f.Name) ..."
+        try {
+            Invoke-WebRequest -Uri $f.Url -OutFile $dest -UseBasicParsing
+            $mb = [math]::Round((Get-Item $dest).Length / 1MB, 1)
+            Write-Ok "Downloaded $($f.Name) ($mb MB)"
+        } catch {
+            Write-Warn "Failed to download $($f.Name): $($_.Exception.Message)"
+        }
+    }
+}
+
+Write-Head "Prerequisites"
 foreach ($tool in @(
     @{ Name = "node";  Hint = "Install Node.js LTS from https://nodejs.org" },
     @{ Name = "cargo"; Hint = "Install Rust from https://rustup.rs" }
@@ -43,9 +111,10 @@ foreach ($tool in @(
         Write-Warn "$($tool.Name) not found - $($tool.Hint)"
     }
 }
+Write-Info "The sherpa-onnx native libraries are fetched by the Rust build"
+Write-Info "(cargo ... --features sherpa) - no CMake / C++ / libclang required."
 
-Write-Head "Foundry Local (rewrite provider)"
-
+Write-Head "Foundry Local (rewrite provider - optional)"
 $foundry = Get-Command foundry -ErrorAction SilentlyContinue
 if (-not $foundry) {
     Write-Warn "Foundry Local CLI not found."
@@ -54,41 +123,25 @@ if (-not $foundry) {
     Write-Info "You can keep using Mock rewrite in the app until this is ready."
 } else {
     Write-Ok "foundry CLI found"
-    Write-Info "Starting the Foundry service (idempotent)..."
     try { foundry service start | Out-Null; Write-Ok "Service started (or already running)" }
     catch { Write-Warn "Could not start service: $($_.Exception.Message)" }
-
-    Write-Info "Downloading model '$FoundryModel' (skips if present)..."
     try { foundry model download $FoundryModel; Write-Ok "Model '$FoundryModel' downloaded" }
     catch { Write-Warn "Download failed: $($_.Exception.Message)" }
-
-    Write-Info "Loading model '$FoundryModel'..."
     try { foundry model load $FoundryModel; Write-Ok "Model '$FoundryModel' loaded" }
     catch { Write-Warn "Load failed: $($_.Exception.Message)" }
 }
 
-Write-Head "Whisper GGML model (transcription provider)"
-
-if (-not (Test-Path $WhisperModelDir)) {
-    New-Item -ItemType Directory -Path $WhisperModelDir -Force | Out-Null
-    Write-Ok "Created model folder: $WhisperModelDir"
+if ($SkipModels) {
+    Write-Head "Speech models"
+    Write-Info "Skipped (-SkipModels). Use the in-app Settings -> Download buttons instead."
 } else {
-    Write-Ok "Model folder exists: $WhisperModelDir"
-}
+    Write-Head "STT model ($SttModel)"
+    Get-ModelInto $SttModel
 
-$modelPath = Join-Path $WhisperModelDir $WhisperModelFile
-if (Test-Path $modelPath) {
-    Write-Ok "Whisper model present: $modelPath"
-} else {
-    Write-Warn "Whisper model NOT found at: $modelPath"
-    Write-Info "Download a supported GGML model and place it there. For example, the"
-    Write-Info "official whisper.cpp models are published on Hugging Face:"
-    Write-Info "    https://huggingface.co/ggerganov/whisper.cpp"
-    Write-Info "Recommended for English: ggml-base.en.bin"
-    Write-Info "This script does not fetch weights automatically (size + licensing)."
-    Write-Info "In the app, set Settings -> Whisper model path to this file, or keep"
-    Write-Info "using the Mock transcription provider."
+    Write-Head "TTS voice ($TtsVoice)"
+    Get-ModelInto $TtsVoice
 }
 
 Write-Head "Done"
-Write-Info "Reminder: models and secrets are git-ignored and must never be committed."
+Write-Info "Set the STT model and TTS voice in the app under Settings."
+Write-Info "Reminder: models, voices, and DLLs are git-ignored and must never be committed."
