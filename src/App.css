@@ -49,6 +49,23 @@ body {
   white-space: nowrap;
 }
 
+.app__badges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.app__badge--ok {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.app__badge--warn {
+  border-color: #eab308;
+  color: #eab308;
+}
+
 .app__title {
   margin: 0;
   font-size: 1.6rem;

@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::models::{self, ModelKind};
 use crate::rewrite::foundry_local::FoundryLocalRewriteProvider;
-use crate::settings::{RewriteKind, Settings, TranscriptionKind};
+use crate::settings::{RewriteKind, Settings, TranscriptionKind, TtsKind};
 
 /// Outcome of a single health check.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -55,6 +55,7 @@ pub async fn run_health_checks(settings: &Settings, models_root: &Path) -> Vec<H
     checks.push(check_temp_writable());
     checks.push(check_microphone());
     checks.extend(check_stt(settings, models_root));
+    checks.extend(check_tts(settings, models_root).await);
     checks.extend(check_foundry(settings).await);
 
     checks
@@ -161,6 +162,130 @@ scripts/setup-local-models.ps1 (the packaged app also bundles the tiny model).",
     };
 
     vec![engine, present]
+}
+
+/// Audio-output device availability + TTS voice presence (and, when the engine
+/// is compiled in and the voice is present, a tiny synthesis smoke test).
+async fn check_tts(settings: &Settings, models_root: &Path) -> Vec<HealthCheck> {
+    let active = settings.tts_provider == TtsKind::Sherpa;
+
+    // Output device (needed for any playback, mock or real).
+    let output = HealthCheck::new(
+        "audio_output",
+        "Audio output device available",
+        if audio_output_available() {
+            HealthStatus::Pass
+        } else {
+            HealthStatus::Fail
+        },
+        if audio_output_available() {
+            "A default output device was found for speech playback.".to_string()
+        } else {
+            "No audio output device was found. Connect speakers/headphones to hear spoken output."
+                .to_string()
+        },
+    );
+
+    // TTS voice files present on disk?
+    let entry = models::find(&settings.tts_voice).filter(|e| e.kind == ModelKind::Tts);
+    let voice_present = entry.map(|e| e.is_present(models_root)).unwrap_or(false);
+    let voice = match entry {
+        Some(e) => HealthCheck::new(
+            "tts_voice_exists",
+            "Text-to-speech voice present",
+            if voice_present {
+                HealthStatus::Pass
+            } else if active {
+                HealthStatus::Fail
+            } else {
+                HealthStatus::Skipped
+            },
+            if voice_present {
+                format!("`{}` is installed in {}.", e.display_name, e.dir(models_root).display())
+            } else {
+                format!(
+                    "`{}` is not downloaded yet. Download it from Settings or run \
+scripts/setup-local-models.ps1 (the packaged app also bundles the default voice).",
+                    e.display_name
+                )
+            },
+        ),
+        None => HealthCheck::new(
+            "tts_voice_exists",
+            "Text-to-speech voice present",
+            if active { HealthStatus::Fail } else { HealthStatus::Skipped },
+            format!("Unknown TTS voice id `{}`.", settings.tts_voice),
+        ),
+    };
+
+    // Synthesis smoke test: only meaningful when the engine is compiled in, the
+    // provider is active, and the voice is present.
+    let synth = if !active {
+        HealthCheck::new(
+            "tts_synth",
+            "Text-to-speech synthesis",
+            HealthStatus::Skipped,
+            "Mock TTS active (a beep, no model). Switch the TTS provider to the local neural engine \
+to run this check.",
+        )
+    } else if !speech_engine_available() {
+        HealthCheck::new(
+            "tts_synth",
+            "Text-to-speech synthesis",
+            HealthStatus::Fail,
+            "This build has no local speech engine, so neural TTS is unavailable. Use the \
+speech-enabled release build or build with `--features sherpa`.",
+        )
+    } else if !voice_present {
+        HealthCheck::new(
+            "tts_synth",
+            "Text-to-speech synthesis",
+            HealthStatus::Skipped,
+            "Skipped because the selected voice is not installed yet.",
+        )
+    } else {
+        // Engine + voice present: attempt a tiny synthesis to prove it loads.
+        match tiny_tts_smoke(models_root, &settings.tts_voice).await {
+            Ok(()) => HealthCheck::new(
+                "tts_synth",
+                "Text-to-speech synthesis",
+                HealthStatus::Pass,
+                "Synthesized a short sample successfully.",
+            ),
+            Err(e) => HealthCheck::new(
+                "tts_synth",
+                "Text-to-speech synthesis",
+                HealthStatus::Fail,
+                e.hint().unwrap_or_else(|| e.to_string()),
+            ),
+        }
+    };
+
+    vec![output, voice, synth]
+}
+
+/// Synthesize a tiny sample (no playback) to verify the voice actually loads.
+/// A no-op stub when the `sherpa` feature is disabled.
+#[cfg(feature = "sherpa")]
+async fn tiny_tts_smoke(models_root: &Path, voice_id: &str) -> Result<(), crate::errors::VfError> {
+    use crate::tts::sherpa::SherpaTtsProvider;
+    use crate::tts::TtsProvider;
+
+    let provider = SherpaTtsProvider::from_voice(models_root, voice_id)?;
+    let out = provider.synthesize("test").await?;
+    if out.samples.is_empty() {
+        return Err(crate::errors::VfError::TtsSynthFailed {
+            detail: "the voice produced no audio".to_string(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sherpa"))]
+async fn tiny_tts_smoke(_models_root: &Path, _voice_id: &str) -> Result<(), crate::errors::VfError> {
+    Err(crate::errors::VfError::SpeechEngineUnavailable {
+        detail: "built without the `sherpa` feature".to_string(),
+    })
 }
 
 /// Whether the real sherpa-onnx speech engine is compiled into this build.

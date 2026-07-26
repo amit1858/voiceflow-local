@@ -22,8 +22,10 @@ import {
   listModels,
   downloadModel,
   onDownloadProgress,
+  getCapabilities,
 } from "./lib/ipc";
 import type {
+  Capabilities,
   HealthCheck,
   ModelInfo,
   OutputMode,
@@ -46,6 +48,7 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadLabel, setDownloadLabel] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
 
   const [health, setHealth] = useState<HealthCheck[]>([]);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -121,9 +124,17 @@ export default function App() {
       // Non-fatal: Settings falls back to showing the raw id.
     }
   }, []);
+  const refreshCapabilities = useCallback(async () => {
+    try {
+      setCapabilities(await getCapabilities());
+    } catch {
+      // Non-fatal: the capability badge simply won't render.
+    }
+  }, []);
   useEffect(() => {
     void refreshModels();
-  }, [refreshModels]);
+    void refreshCapabilities();
+  }, [refreshModels, refreshCapabilities]);
 
   // Live download progress → a compact "<file> NN%" label on the active button.
   useEffect(() => {
@@ -157,6 +168,7 @@ export default function App() {
         await downloadModel(id);
         setToast("Download complete");
         await refreshModels();
+        await refreshCapabilities();
       } catch (err) {
         setCopyError(err as VfError);
       } finally {
@@ -164,7 +176,7 @@ export default function App() {
         setDownloadLabel(null);
       }
     },
-    [refreshModels],
+    [refreshModels, refreshCapabilities],
   );
 
   // The hotkey handler must always use the latest `mode`; the hook keeps the
@@ -246,12 +258,13 @@ export default function App() {
       const saved = await saveSettings(next);
       setSettings(saved);
       setToast("Settings saved");
+      void refreshCapabilities();
     } catch (err) {
       setCopyError(err as VfError);
     } finally {
       setSavingSettings(false);
     }
-  }, []);
+  }, [refreshCapabilities]);
 
   const handleClearTemp = useCallback(async () => {
     setCopyError(null);
@@ -305,9 +318,30 @@ export default function App() {
             Local voice → clipboard. Nothing leaves your machine.
           </p>
         </div>
-        <span className="app__badge" title="Active providers">
-          {providerBadge}
-        </span>
+        <div className="app__badges">
+          <span className="app__badge" title="Active providers">
+            {providerBadge}
+          </span>
+          {capabilities && (
+            <span
+              className={
+                "app__badge app__badge--cap " +
+                (capabilities.speech_engine
+                  ? "app__badge--ok"
+                  : "app__badge--warn")
+              }
+              title={
+                capabilities.speech_engine
+                  ? "This build includes the real sherpa-onnx speech engine (STT + neural TTS)."
+                  : "This build has no local speech engine. Mock STT/TTS work; selecting the local engine will report a clear error, not silently fake success."
+              }
+            >
+              {capabilities.speech_engine
+                ? "Speech engine: real"
+                : "Speech engine: mock-only"}
+            </span>
+          )}
+        </div>
       </header>
 
       <nav className="tabs" role="tablist">
