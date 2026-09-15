@@ -49,6 +49,23 @@ body {
   white-space: nowrap;
 }
 
+.app__badges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.app__badge--ok {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.app__badge--warn {
+  border-color: #eab308;
+  color: #eab308;
+}
+
 .app__title {
   margin: 0;
   font-size: 1.6rem;
@@ -182,6 +199,26 @@ body {
 .indicator__hint {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+/* Live mic-level meter shown while recording. */
+.indicator__meter {
+  display: inline-block;
+  vertical-align: middle;
+  width: 120px;
+  height: 8px;
+  margin-left: 10px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.25);
+  overflow: hidden;
+}
+
+.indicator__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #22c55e, #eab308 70%, #ef4444);
+  transition: width 90ms linear;
 }
 
 /* Mode picker */

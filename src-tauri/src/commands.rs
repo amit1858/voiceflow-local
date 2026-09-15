@@ -4,7 +4,7 @@
 //! `{ code, message, hint }` so the UI can render a friendly banner. See
 //! `src/lib/ipc.ts` for the matching TypeScript wrappers.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use crate::audio::recorder::ActiveRecording;
@@ -18,7 +18,7 @@ use crate::state::{AppState, RecordingSession};
 
 /// Start capturing microphone audio to a fresh temp WAV.
 #[tauri::command]
-pub fn start_recording(state: State<'_, AppState>) -> Result<(), VfError> {
+pub fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(), VfError> {
     let mut guard = state
         .recording
         .lock()
@@ -30,7 +30,15 @@ pub fn start_recording(state: State<'_, AppState>) -> Result<(), VfError> {
 
     // Allocate the temp path; the RAII guard deletes the file when dropped.
     let temp = TempWav::new();
-    let active = ActiveRecording::start(temp.path().to_path_buf())?;
+
+    // Emit a live input level (~10×/second) so the UI can show a mic meter and
+    // the user can see whether the mic is actually picking up sound.
+    let level_app = app.clone();
+    let on_level: crate::audio::recorder::LevelCb =
+        std::sync::Arc::new(move |level: f32| {
+            let _ = level_app.emit("input-level", level);
+        });
+    let active = ActiveRecording::start(temp.path().to_path_buf(), Some(on_level))?;
 
     *guard = Some(RecordingSession { active, temp });
     Ok(())
@@ -59,8 +67,10 @@ pub async fn stop_and_process(
     // the WAV. We also call `cleanup()` explicitly on the success path.
     let wav_path = active.stop()?;
 
-    // Build providers from the current settings (mock-first by default).
-    let transcriber = state.transcriber();
+    // Build providers from the current settings (mock-first by default). A
+    // misconfigured real provider fails closed here with a typed error (the
+    // temp WAV is still cleaned up because `temp` drops on this early return).
+    let transcriber = state.transcriber()?;
     let rewriter = state.rewriter();
     let style = state.style.clone();
 
@@ -194,7 +204,7 @@ pub async fn run_health_checks(
     state: State<'_, AppState>,
 ) -> Result<Vec<HealthCheck>, VfError> {
     let settings = state.current_settings();
-    Ok(health::run_health_checks(&settings).await)
+    Ok(health::run_health_checks(&settings, &state.model_dir).await)
 }
 
 /// Delete any leftover `voiceflow-*.wav` temp files. Returns how many were
@@ -217,4 +227,94 @@ pub fn clear_temp_files() -> Result<usize, VfError> {
         }
     }
     Ok(removed)
+}
+
+/// Synthesize `text` with the active TTS provider and play it on the default
+/// output device. This is a **post-preview** action (Speak / auto-speak) and is
+/// never part of `run_pipeline`. Any currently-playing audio is stopped first.
+#[tauri::command]
+pub async fn speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), VfError> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(VfError::TtsSynthFailed {
+            detail: "there is no text to speak yet.".to_string(),
+        });
+    }
+
+    // Build the provider and synthesize off the calling thread.
+    let provider = state.tts_provider()?;
+    let audio = provider.synthesize(&text).await?;
+
+    // Stop any prior playback, then start the new one.
+    stop_playback(&state)?;
+    let emit_app = app.clone();
+    let handle = crate::tts::playback::play(audio, move || {
+        let _ = emit_app.emit("tts-finished", ());
+    })?;
+    let mut guard = state
+        .playback
+        .lock()
+        .map_err(|_| VfError::internal("playback state poisoned"))?;
+    *guard = Some(handle);
+    Ok(())
+}
+
+/// Stop any in-progress TTS playback. Safe to call when nothing is playing.
+#[tauri::command]
+pub fn stop_speaking(state: State<'_, AppState>) -> Result<(), VfError> {
+    stop_playback(&state)
+}
+
+/// List the voices offered by the active TTS provider (installed or not).
+#[tauri::command]
+pub fn list_voices(state: State<'_, AppState>) -> Result<Vec<crate::tts::Voice>, VfError> {
+    let provider = state.tts_provider()?;
+    Ok(provider.list_voices())
+}
+
+/// List every registered model/voice with its installed state (for the
+/// Settings download UI).
+#[tauri::command]
+pub fn list_models(state: State<'_, AppState>) -> Result<Vec<crate::models::ModelInfo>, VfError> {
+    Ok(crate::models::list_models(&state.model_dir))
+}
+
+/// Download the model/voice with registry id `id`, emitting "download-progress"
+/// events to the UI as bytes arrive.
+#[tauri::command]
+pub async fn download_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), VfError> {
+    let models_root = state.model_dir.clone();
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| VfError::ModelDownloadFailed { detail: e.to_string() })?;
+
+    let emit_app = app.clone();
+    crate::models::download_model(&models_root, &id, &client, move |p| {
+        let _ = emit_app.emit("download-progress", p);
+    })
+    .await
+}
+
+/// Report the running build's speech capabilities so the UI can show a
+/// capability badge and never present an unavailable provider as a silent trap.
+#[tauri::command]
+pub fn get_capabilities(state: State<'_, AppState>) -> Result<health::Capabilities, VfError> {
+    let settings = state.current_settings();
+    Ok(health::capabilities(&settings, &state.model_dir))
+}
+
+/// Stop and clear any active playback handle.
+fn stop_playback(state: &State<'_, AppState>) -> Result<(), VfError> {
+    let mut guard = state
+        .playback
+        .lock()
+        .map_err(|_| VfError::internal("playback state poisoned"))?;
+    if let Some(mut handle) = guard.take() {
+        handle.stop();
+    }
+    Ok(())
 }

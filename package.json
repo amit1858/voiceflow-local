@@ -10,9 +10,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:dev:whisper": "tauri dev --features whisper",
+    "tauri:dev:sherpa": "tauri dev --features sherpa",
     "tauri:build": "tauri build",
-    "tauri:build:whisper": "tauri build --features whisper"
+    "tauri:build:sherpa": "tauri build --features sherpa"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

@@ -5,6 +5,12 @@ interface Props {
   result: PipelineResult | null;
   onCopy: (text: string) => Promise<void> | void;
   onClear: () => void;
+  /** Speak the current (edited) text aloud via the active TTS provider. */
+  onSpeak?: (text: string) => Promise<void> | void;
+  /** Stop any in-progress speech. */
+  onStopSpeaking?: () => Promise<void> | void;
+  /** True while TTS audio is playing (toggles the Speak/Stop button). */
+  speaking?: boolean;
   /**
    * Optional debug/validation aid: a label like "Last processed at 11:04:07 PM
    * · run #3" shown above the preview so it's visually obvious the pipeline
@@ -19,7 +25,15 @@ interface Props {
  * the clipboard (no auto-send). Editing the text never mutates the underlying
  * transcript; a new recording result resets the editable buffer.
  */
-export function PreviewPane({ result, onCopy, onClear, runLabel }: Props) {
+export function PreviewPane({
+  result,
+  onCopy,
+  onClear,
+  onSpeak,
+  onStopSpeaking,
+  speaking,
+  runLabel,
+}: Props) {
   const [text, setText] = useState("");
   const [copied, setCopied] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
@@ -68,6 +82,19 @@ export function PreviewPane({ result, onCopy, onClear, runLabel }: Props) {
           >
             {copied ? "Copied ✓" : "Copy"}
           </button>
+          {onSpeak && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() =>
+                speaking ? onStopSpeaking?.() : onSpeak(text)
+              }
+              disabled={!speaking && text.trim().length === 0}
+              title="Read the preview text aloud"
+            >
+              {speaking ? "Stop ◼" : "Speak ▶"}
+            </button>
+          )}
           <button type="button" className="btn btn--ghost" onClick={handleClear}>
             Clear
           </button>

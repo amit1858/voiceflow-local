@@ -28,25 +28,37 @@ uuid = { version = "1", features = ["v4"] }
 # Async runtime (Tauri already pulls tokio; we use the multi-thread runtime).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
 
-# Local HTTP client for the Foundry Local OpenAI-compatible endpoint.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Local HTTP client for the Foundry Local endpoint and model downloads.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# Stream combinators for download progress.
+futures-util = "0.3"
 
 # Audio capture + WAV writing.
 cpal = "0.15"
 hound = "3.5"
 
-# In-process whisper.cpp bindings. Gated behind the (opt-in) `whisper` feature so
-# a fresh checkout builds and runs in mock mode with NO C/C++ + CMake toolchain.
-# Enable real local transcription with `--features whisper` (see README).
-whisper-rs = { version = "0.14", optional = true }
+# Local audio playback for TTS output (pure-Rust, no native toolchain).
+rodio = { version = "0.19", default-features = false }
+
+# Checksum verification for downloaded models.
+sha2 = "0.10"
+
+# Local, self-contained speech engine (STT + TTS) via sherpa-onnx. Gated behind
+# the (opt-in) `sherpa` feature so a fresh checkout builds and runs in mock mode
+# with NO native speech toolchain. The `download-binaries` + `tts` default
+# features fetch PREBUILT sherpa-onnx + ONNX Runtime libraries — no CMake / C++
+# compiler is ever required (a bindgen libclang is needed only to *build* the
+# engine from source; end users of the prebuilt release need nothing). See README.
+sherpa-rs = { version = "0.6.8", optional = true }
 
 [features]
-# Mock-first: the default build needs no native toolchain and runs end-to-end.
+# Mock-first: the default build needs no native speech toolchain and runs
+# end-to-end (mock STT + mock TTS + mock/Foundry rewrite).
 default = []
-# Enables the real WhisperCppProvider. Requires CMake + a C/C++ compiler AND a
-# STABLE libclang (LLVM 17.x/18.x) — very new libclang (20+/trunk) mis-parses the
-# whisper.cpp headers and fails to build. See README "Native build & packaging".
-whisper = ["dep:whisper-rs"]
+# Enables the real Sherpa STT + TTS providers backed by prebuilt sherpa-onnx
+# binaries (no CMake/C++). The release build ships with this enabled so real
+# speech works out of the box for end users. See README "Build & packaging".
+sherpa = ["dep:sherpa-rs"]
 
 [profile.release]
 codegen-units = 1

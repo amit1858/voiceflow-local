@@ -52,10 +52,20 @@ export type VfErrorCode =
   | "AudioCaptureFailed"
   | "InvalidAudioFile"
   | "TempCleanupFailed"
+  | "RecordingTooShort"
+  | "NoSpeechDetected"
+  | "SpeechEngineUnavailable"
   | "ModelMissing"
   | "ModelInvalid"
   | "ModelLoadFailed"
   | "TranscriptionFailed"
+  | "UnknownModel"
+  | "ModelDownloadFailed"
+  | "ModelChecksumMismatch"
+  | "TtsVoiceMissing"
+  | "TtsSynthFailed"
+  | "TtsPlaybackFailed"
+  | "NoAudioOutputDevice"
   | "FoundryNotInstalled"
   | "FoundryServiceNotRunning"
   | "FoundryPortNotDiscovered"
@@ -89,9 +99,52 @@ export interface PipelineResult {
 export type RecordingState = "idle" | "recording" | "processing";
 
 /** Transcription provider selector. Matches Rust `TranscriptionKind`. */
-export type TranscriptionKind = "mock" | "local_whisper";
+export type TranscriptionKind = "mock" | "sherpa";
+/** Text-to-speech provider selector. Matches Rust `TtsKind`. */
+export type TtsKind = "mock" | "sherpa";
 /** Rewrite provider selector. Matches Rust `RewriteKind`. */
 export type RewriteKind = "mock" | "foundry_local";
+
+/** Model kind. Matches Rust `ModelKind`. */
+export type ModelKind = "stt" | "tts";
+
+/** A registered speech model/voice. Matches Rust `ModelInfo`. */
+export interface ModelInfo {
+  id: string;
+  kind: ModelKind;
+  display_name: string;
+  description: string;
+  bundled: boolean;
+  approx_mb: number;
+  installed: boolean;
+}
+
+/** A synthesizable TTS voice. Matches Rust `Voice`. */
+export interface Voice {
+  id: string;
+  display_name: string;
+  installed: boolean;
+}
+
+/** Progress event for a model download. Matches Rust `DownloadProgress`. */
+export interface DownloadProgress {
+  model_id: string;
+  file: string;
+  file_index: number;
+  file_count: number;
+  received: number;
+  total: number | null;
+  done: boolean;
+}
+
+/** Build/runtime speech capability. Matches Rust `Capabilities`. */
+export interface Capabilities {
+  /** True when the running build has the real sherpa-onnx speech engine. */
+  speech_engine: boolean;
+  stt_model_installed: boolean;
+  tts_voice_installed: boolean;
+  audio_output_available: boolean;
+}
 
 /** User settings. Field names match Rust `Settings` (snake_case). */
 export interface Settings {
@@ -99,7 +152,10 @@ export interface Settings {
   default_mode: OutputMode;
   transcription_provider: TranscriptionKind;
   rewrite_provider: RewriteKind;
-  whisper_model_path: string;
+  stt_model: string;
+  tts_provider: TtsKind;
+  tts_voice: string;
+  auto_speak: boolean;
   foundry_model: string;
   foundry_endpoint: string | null;
   auto_copy: boolean;
@@ -142,13 +198,33 @@ export const ERROR_REMEDIATION: Record<VfErrorCode, string> = {
     "The captured audio was missing or invalid. Record again and speak close to the mic.",
   TempCleanupFailed:
     "Temporary audio files could not be removed. You can retry from Settings → Clear temp files.",
+  RecordingTooShort:
+    "That recording was too short. Hold the hotkey and speak for at least a second, then release.",
+  NoSpeechDetected:
+    "No speech was detected — the mic level was basically silent. Move closer to the mic and try again.",
+  SpeechEngineUnavailable:
+    "This build has no local speech engine. Use the speech-enabled release build (prebuilt binaries, no toolchain) — or keep using the Mock providers.",
   ModelMissing:
-    "The local Whisper model file is missing. See the hint for the expected path and download instructions.",
+    "The local speech model file is missing. See the hint for the expected path, or download it from Settings.",
   ModelInvalid:
-    "The Whisper model file is invalid or unreadable. Re-download a supported GGML model.",
+    "The speech model file is invalid or unreadable. Re-download it from Settings.",
   ModelLoadFailed:
-    "The Whisper model could not be loaded. It may be corrupted — re-download it.",
+    "The speech model could not be loaded. It may be corrupted — re-download it.",
   TranscriptionFailed: "Transcription failed. Try recording again.",
+  UnknownModel:
+    "That model id is not registered. Pick a listed model in Settings.",
+  ModelDownloadFailed:
+    "The model download failed. Check your connection and retry from Settings.",
+  ModelChecksumMismatch:
+    "The downloaded model failed checksum verification. Delete it and download again.",
+  TtsVoiceMissing:
+    "The selected voice model is missing. Download a voice from Settings, or switch TTS to Mock.",
+  TtsSynthFailed:
+    "Speech synthesis failed. Try a different voice or switch TTS to Mock.",
+  TtsPlaybackFailed:
+    "Could not play the synthesized audio. Check your speakers/headphones and output device.",
+  NoAudioOutputDevice:
+    "No audio output device was found. Connect speakers or headphones and try again.",
   FoundryNotInstalled:
     "Microsoft Foundry Local is not installed. Install it with `winget install Microsoft.FoundryLocal`, then run `foundry service start`. You can keep using Mock mode meanwhile.",
   FoundryServiceNotRunning:

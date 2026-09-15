@@ -33,20 +33,55 @@ pub enum VfError {
     #[error("Failed to clean up temporary audio files")]
     TempCleanupFailed { detail: String },
 
-    // ---- Whisper / transcription ---------------------------------------
-    #[error("The local Whisper model file is missing")]
+    #[error("The recording was too short")]
+    RecordingTooShort { detail: String },
+
+    #[error("No speech was detected")]
+    NoSpeechDetected { detail: String },
+
+    // ---- Speech engine / transcription ---------------------------------
+    // Constructed only in the mock-only build (the `not(feature="sherpa")`
+    // provider stubs); allow it unconditionally so the sherpa build is clean.
+    #[error("The local speech engine is not available in this build")]
+    #[allow(dead_code)]
+    SpeechEngineUnavailable { detail: String },
+
+    #[error("The local speech model file is missing")]
     ModelMissing { expected_path: String, hint: String },
 
-    #[error("The Whisper model file is invalid or unreadable")]
-    #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+    #[error("The speech model file is invalid or unreadable")]
+    #[allow(dead_code)]
     ModelInvalid { detail: String },
 
-    #[error("Failed to load the Whisper model")]
-    #[cfg_attr(not(feature = "whisper"), allow(dead_code))]
+    #[error("Failed to load the speech model")]
+    #[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
     ModelLoadFailed { detail: String },
 
     #[error("Transcription failed")]
     TranscriptionFailed { detail: String },
+
+    // ---- Model manager (download / verify) -----------------------------
+    #[error("Unknown model id")]
+    UnknownModel { id: String },
+
+    #[error("Downloading the model failed")]
+    ModelDownloadFailed { detail: String },
+
+    #[error("The downloaded model failed checksum verification")]
+    ModelChecksumMismatch { detail: String },
+
+    // ---- Text to speech -------------------------------------------------
+    #[error("The selected voice model is missing")]
+    TtsVoiceMissing { expected_path: String, hint: String },
+
+    #[error("Speech synthesis failed")]
+    TtsSynthFailed { detail: String },
+
+    #[error("Could not play the synthesized audio")]
+    TtsPlaybackFailed { detail: String },
+
+    #[error("No audio output device was found")]
+    NoAudioOutputDevice,
 
     // ---- Foundry Local / rewrite ---------------------------------------
     #[error("Microsoft Foundry Local is not installed")]
@@ -95,10 +130,20 @@ impl VfError {
             VfError::AudioCaptureFailed { .. } => "AudioCaptureFailed",
             VfError::InvalidAudioFile { .. } => "InvalidAudioFile",
             VfError::TempCleanupFailed { .. } => "TempCleanupFailed",
+            VfError::RecordingTooShort { .. } => "RecordingTooShort",
+            VfError::NoSpeechDetected { .. } => "NoSpeechDetected",
+            VfError::SpeechEngineUnavailable { .. } => "SpeechEngineUnavailable",
             VfError::ModelMissing { .. } => "ModelMissing",
             VfError::ModelInvalid { .. } => "ModelInvalid",
             VfError::ModelLoadFailed { .. } => "ModelLoadFailed",
             VfError::TranscriptionFailed { .. } => "TranscriptionFailed",
+            VfError::UnknownModel { .. } => "UnknownModel",
+            VfError::ModelDownloadFailed { .. } => "ModelDownloadFailed",
+            VfError::ModelChecksumMismatch { .. } => "ModelChecksumMismatch",
+            VfError::TtsVoiceMissing { .. } => "TtsVoiceMissing",
+            VfError::TtsSynthFailed { .. } => "TtsSynthFailed",
+            VfError::TtsPlaybackFailed { .. } => "TtsPlaybackFailed",
+            VfError::NoAudioOutputDevice => "NoAudioOutputDevice",
             VfError::FoundryNotInstalled => "FoundryNotInstalled",
             VfError::FoundryServiceNotRunning { .. } => "FoundryServiceNotRunning",
             VfError::FoundryPortNotDiscovered { .. } => "FoundryPortNotDiscovered",
@@ -119,6 +164,19 @@ impl VfError {
             VfError::ModelMissing { expected_path, hint } => {
                 Some(format!("Expected model at: {expected_path}\n{hint}"))
             }
+            VfError::TtsVoiceMissing { expected_path, hint } => {
+                Some(format!("Expected voice at: {expected_path}\n{hint}"))
+            }
+            VfError::SpeechEngineUnavailable { .. } => Some(
+                "This build was compiled without the local speech engine. Use the \
+speech-enabled release build (which ships the prebuilt sherpa-onnx binaries), or build from \
+source with `--features sherpa`. Mock providers keep working in any build."
+                    .to_string(),
+            ),
+            VfError::NoAudioOutputDevice => Some(
+                "Connect speakers or headphones and check the Windows output device, then retry."
+                    .to_string(),
+            ),
             VfError::FoundryNotInstalled => Some(
                 "Install with `winget install Microsoft.FoundryLocal`, then run \
 `foundry service start` and `foundry model load phi-4-mini-instruct`. You can keep using \
@@ -148,6 +206,12 @@ or set a manual endpoint override in Settings."
             | VfError::AudioCaptureFailed { detail }
             | VfError::InvalidAudioFile { detail }
             | VfError::TempCleanupFailed { detail }
+            | VfError::RecordingTooShort { detail }
+            | VfError::NoSpeechDetected { detail }
+            | VfError::ModelDownloadFailed { detail }
+            | VfError::ModelChecksumMismatch { detail }
+            | VfError::TtsSynthFailed { detail }
+            | VfError::TtsPlaybackFailed { detail }
             | VfError::FoundryNoResponse { detail }
             | VfError::SettingsError { detail }
             | VfError::Internal { detail } => {
@@ -157,6 +221,7 @@ or set a manual endpoint override in Settings."
                     Some(detail.clone())
                 }
             }
+            VfError::UnknownModel { id } => Some(format!("No model registered with id `{id}`.")),
             _ => None,
         }
     }
@@ -242,5 +307,78 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["code"], "NotRecording");
         assert!(json["hint"].is_null());
+    }
+
+    #[test]
+    fn tts_voice_missing_hint_includes_path_and_serializes() {
+        let e = VfError::TtsVoiceMissing {
+            expected_path: "C:/models/tts/vits-ljs".into(),
+            hint: "download the voice".into(),
+        };
+        assert_eq!(e.code(), "TtsVoiceMissing");
+        let hint = e.hint().unwrap();
+        assert!(hint.contains("C:/models/tts/vits-ljs"));
+        assert!(hint.contains("download the voice"));
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["code"], "TtsVoiceMissing");
+        assert!(json["hint"].is_string());
+    }
+
+    #[test]
+    fn speech_engine_unavailable_hint_mentions_sherpa_feature() {
+        let hint = VfError::SpeechEngineUnavailable { detail: String::new() }
+            .hint()
+            .unwrap();
+        assert!(hint.contains("--features sherpa"));
+        assert!(hint.to_lowercase().contains("mock"));
+    }
+
+    #[test]
+    fn no_audio_output_device_has_code_and_hint() {
+        let e = VfError::NoAudioOutputDevice;
+        assert_eq!(e.code(), "NoAudioOutputDevice");
+        assert!(e.hint().unwrap().to_lowercase().contains("output device"));
+    }
+
+    #[test]
+    fn tts_synth_and_playback_carry_detail_hint() {
+        let synth = VfError::TtsSynthFailed { detail: "bad voice graph".into() };
+        assert_eq!(synth.code(), "TtsSynthFailed");
+        assert_eq!(synth.hint().unwrap(), "bad voice graph");
+
+        let play = VfError::TtsPlaybackFailed { detail: "no sink".into() };
+        assert_eq!(play.code(), "TtsPlaybackFailed");
+        assert_eq!(play.hint().unwrap(), "no sink");
+    }
+
+    #[test]
+    fn download_and_checksum_errors_map_cleanly() {
+        let dl = VfError::ModelDownloadFailed { detail: "HTTP 404".into() };
+        assert_eq!(dl.code(), "ModelDownloadFailed");
+        assert_eq!(dl.hint().unwrap(), "HTTP 404");
+
+        let sum = VfError::ModelChecksumMismatch { detail: "expected a, got b".into() };
+        let json = serde_json::to_value(&sum).unwrap();
+        assert_eq!(json["code"], "ModelChecksumMismatch");
+        assert_eq!(json["hint"], "expected a, got b");
+    }
+
+    #[test]
+    fn unknown_model_hint_names_the_id() {
+        let e = VfError::UnknownModel { id: "does-not-exist".into() };
+        assert_eq!(e.code(), "UnknownModel");
+        assert!(e.hint().unwrap().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn audio_guard_errors_have_stable_codes() {
+        assert_eq!(
+            VfError::RecordingTooShort { detail: "0.1s".into() }.code(),
+            "RecordingTooShort"
+        );
+        assert_eq!(
+            VfError::NoSpeechDetected { detail: "rms 0.0001".into() }.code(),
+            "NoSpeechDetected"
+        );
     }
 }

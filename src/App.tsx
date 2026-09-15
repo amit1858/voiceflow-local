@@ -13,11 +13,21 @@ import {
   clearTempFiles,
   copyToClipboard,
   getSettings,
+  onInputLevel,
   runHealthChecks,
   saveSettings,
+  speak,
+  stopSpeaking,
+  onTtsFinished,
+  listModels,
+  downloadModel,
+  onDownloadProgress,
+  getCapabilities,
 } from "./lib/ipc";
 import type {
+  Capabilities,
   HealthCheck,
+  ModelInfo,
   OutputMode,
   PipelineResult,
   Settings,
@@ -33,6 +43,12 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [copyError, setCopyError] = useState<VfError | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [inputLevel, setInputLevel] = useState(0);
+  const [speaking, setSpeaking] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadLabel, setDownloadLabel] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
 
   const [health, setHealth] = useState<HealthCheck[]>([]);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -65,6 +81,104 @@ export default function App() {
     };
   }, []);
 
+  // Subscribe to the live mic level while the app is open; reset to zero
+  // whenever we leave the recording state so the meter settles.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onInputLevel((level) => setInputLevel(level));
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (recorder.state !== "recording") setInputLevel(0);
+  }, [recorder.state]);
+
+  // Reset the Speak/Stop button when playback finishes naturally.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onTtsFinished(() => setSpeaking(false));
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Load the model/voice list (with installed state) for the Settings download UI.
+  const refreshModels = useCallback(async () => {
+    try {
+      setModels(await listModels());
+    } catch {
+      // Non-fatal: Settings falls back to showing the raw id.
+    }
+  }, []);
+  const refreshCapabilities = useCallback(async () => {
+    try {
+      setCapabilities(await getCapabilities());
+    } catch {
+      // Non-fatal: the capability badge simply won't render.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshModels();
+    void refreshCapabilities();
+  }, [refreshModels, refreshCapabilities]);
+
+  // Live download progress → a compact "<file> NN%" label on the active button.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const u = await onDownloadProgress((p) => {
+        const pct =
+          p.total && p.total > 0
+            ? ` ${Math.round((p.received / p.total) * 100)}%`
+            : "";
+        setDownloadLabel(
+          `${p.file} (${p.file_index + 1}/${p.file_count})${pct}`,
+        );
+      });
+      if (cancelled) u();
+      else unlisten = u;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handleDownload = useCallback(
+    async (id: string) => {
+      setCopyError(null);
+      setDownloadingId(id);
+      setDownloadLabel("Starting…");
+      try {
+        await downloadModel(id);
+        setToast("Download complete");
+        await refreshModels();
+        await refreshCapabilities();
+      } catch (err) {
+        setCopyError(err as VfError);
+      } finally {
+        setDownloadingId(null);
+        setDownloadLabel(null);
+      }
+    },
+    [refreshModels, refreshCapabilities],
+  );
+
   // The hotkey handler must always use the latest `mode`; the hook keeps the
   // handler in a ref so this closure stays current without re-subscribing.
   const handleToggle = useCallback(() => {
@@ -94,6 +208,39 @@ export default function App() {
     void handleCopy(res.output);
   }, [recorder.result, settings?.auto_copy, handleCopy]);
 
+  // Speak the given text aloud (post-preview action, never in the pipeline).
+  const handleSpeak = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+    setCopyError(null);
+    try {
+      setSpeaking(true);
+      await speak(text);
+    } catch (err) {
+      setSpeaking(false);
+      setCopyError(err as VfError);
+    }
+  }, []);
+
+  const handleStopSpeaking = useCallback(async () => {
+    try {
+      await stopSpeaking();
+    } catch {
+      // Best-effort; ignore stop errors.
+    } finally {
+      setSpeaking(false);
+    }
+  }, []);
+
+  // Auto-speak the output after processing when enabled (default off).
+  const lastAutoSpoken = useRef<PipelineResult | null>(null);
+  useEffect(() => {
+    if (!settings?.auto_speak) return;
+    const res = recorder.result;
+    if (!res || res === lastAutoSpoken.current) return;
+    lastAutoSpoken.current = res;
+    void handleSpeak(res.output);
+  }, [recorder.result, settings?.auto_speak, handleSpeak]);
+
   // Stamp each new pipeline result with a time + run counter.
   useEffect(() => {
     const res = recorder.result;
@@ -111,12 +258,13 @@ export default function App() {
       const saved = await saveSettings(next);
       setSettings(saved);
       setToast("Settings saved");
+      void refreshCapabilities();
     } catch (err) {
       setCopyError(err as VfError);
     } finally {
       setSavingSettings(false);
     }
-  }, []);
+  }, [refreshCapabilities]);
 
   const handleClearTemp = useCallback(async () => {
     setCopyError(null);
@@ -156,7 +304,7 @@ export default function App() {
         : "Start recording";
 
   const providerBadge = settings
-    ? `${settings.transcription_provider === "mock" ? "Mock STT" : "Whisper"} · ${
+    ? `${settings.transcription_provider === "mock" ? "Mock STT" : "Sherpa STT"} · ${
         settings.rewrite_provider === "mock" ? "Mock rewrite" : "Foundry Local"
       }`
     : "…";
@@ -170,9 +318,30 @@ export default function App() {
             Local voice → clipboard. Nothing leaves your machine.
           </p>
         </div>
-        <span className="app__badge" title="Active providers">
-          {providerBadge}
-        </span>
+        <div className="app__badges">
+          <span className="app__badge" title="Active providers">
+            {providerBadge}
+          </span>
+          {capabilities && (
+            <span
+              className={
+                "app__badge app__badge--cap " +
+                (capabilities.speech_engine
+                  ? "app__badge--ok"
+                  : "app__badge--warn")
+              }
+              title={
+                capabilities.speech_engine
+                  ? "This build includes the real sherpa-onnx speech engine (STT + neural TTS)."
+                  : "This build has no local speech engine. Mock STT/TTS work; selecting the local engine will report a clear error, not silently fake success."
+              }
+            >
+              {capabilities.speech_engine
+                ? "Speech engine: real"
+                : "Speech engine: mock-only"}
+            </span>
+          )}
+        </div>
       </header>
 
       <nav className="tabs" role="tablist">
@@ -199,8 +368,9 @@ export default function App() {
             <RecordingIndicator
               state={recorder.state}
               hotkey={hotkey}
+              level={inputLevel}
               localModels={
-                settings?.transcription_provider === "local_whisper" ||
+                settings?.transcription_provider === "sherpa" ||
                 settings?.rewrite_provider === "foundry_local"
               }
             />
@@ -238,6 +408,9 @@ export default function App() {
             <PreviewPane
               result={recorder.result}
               onCopy={handleCopy}
+              onSpeak={handleSpeak}
+              onStopSpeaking={handleStopSpeaking}
+              speaking={speaking}
               onClear={() => {
                 recorder.clearResult();
                 setRunLabel(null);
@@ -256,6 +429,10 @@ export default function App() {
               onSave={handleSaveSettings}
               onClearTemp={handleClearTemp}
               saving={savingSettings}
+              models={models}
+              onDownload={handleDownload}
+              downloadingId={downloadingId}
+              downloadLabel={downloadLabel}
             />
           ) : (
             <p>Loading settings…</p>

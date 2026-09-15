@@ -6,11 +6,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   isVfError,
+  type Capabilities,
+  type DownloadProgress,
   type HealthCheck,
+  type ModelInfo,
   type OutputMode,
   type PipelineResult,
   type Settings,
   type VfError,
+  type Voice,
 } from "./types";
 
 /** Normalize any thrown value from `invoke` into a `VfError`. */
@@ -118,6 +122,63 @@ export async function clearTempFiles(): Promise<number> {
 }
 
 /**
+ * Synthesize and play `text` with the active TTS provider. Post-preview action
+ * (Speak / auto-speak) — never part of the transcribe/rewrite pipeline.
+ */
+export async function speak(text: string): Promise<void> {
+  try {
+    await invoke("speak", { text });
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Stop any in-progress TTS playback. */
+export async function stopSpeaking(): Promise<void> {
+  try {
+    await invoke("stop_speaking");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** List the voices offered by the active TTS provider. */
+export async function listVoices(): Promise<Voice[]> {
+  try {
+    return await invoke<Voice[]>("list_voices");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** List every registered model/voice with installed state (Settings download UI). */
+export async function listModels(): Promise<ModelInfo[]> {
+  try {
+    return await invoke<ModelInfo[]>("list_models");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Download the model/voice with registry id `id`. Progress via `onDownloadProgress`. */
+export async function downloadModel(id: string): Promise<void> {
+  try {
+    await invoke("download_model", { id });
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/** Report the running build's speech capabilities (for the capability badge). */
+export async function getCapabilities(): Promise<Capabilities> {
+  try {
+    return await invoke<Capabilities>("get_capabilities");
+  } catch (err) {
+    throw toVfError(err);
+  }
+}
+
+/**
  * Subscribe to the backend "hotkey-toggle" event, emitted whenever the user
  * presses the global shortcut. The handler should toggle recording state.
  */
@@ -125,4 +186,29 @@ export async function onHotkeyToggle(
   handler: () => void,
 ): Promise<UnlistenFn> {
   return listen("hotkey-toggle", () => handler());
+}
+
+/**
+ * Subscribe to the backend "input-level" event, emitted ~10×/second while
+ * recording with the live microphone RMS level in `[0, 1]` for the mic meter.
+ */
+export async function onInputLevel(
+  handler: (level: number) => void,
+): Promise<UnlistenFn> {
+  return listen<number>("input-level", (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe to the backend "download-progress" event, emitted while a model or
+ * voice download is in flight.
+ */
+export async function onDownloadProgress(
+  handler: (progress: DownloadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<DownloadProgress>("download-progress", (e) => handler(e.payload));
+}
+
+/** Subscribe to the backend "tts-finished" event (playback drained naturally). */
+export async function onTtsFinished(handler: () => void): Promise<UnlistenFn> {
+  return listen("tts-finished", () => handler());
 }
