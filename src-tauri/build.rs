@@ -29,7 +29,7 @@ fn main() {
                 )
             });
             let mut hasher = Sha256::new();
-            let mut buffer = [0u8; 1024 * 1024];
+            let mut buffer = vec![0u8; 1024 * 1024];
             loop {
                 let read = file.read(&mut buffer).unwrap_or_else(|error| {
                     panic!("could not hash bundled model {}: {error}", path.display())

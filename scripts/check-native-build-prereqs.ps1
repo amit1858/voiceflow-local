@@ -31,6 +31,23 @@ if (Test-Path $vswhere) {
         Write-Host "FAIL  Install Visual Studio Build Tools with Desktop development with C++." -ForegroundColor Red
         $failures++
     }
+
+    $libclang = $null
+    if ($env:LIBCLANG_PATH) {
+        $candidate = Join-Path $env:LIBCLANG_PATH "libclang.dll"
+        if (Test-Path $candidate) { $libclang = $candidate }
+    }
+    if (-not $libclang) {
+        $candidate = Join-Path $env:ProgramFiles "LLVM\bin\libclang.dll"
+        if (Test-Path $candidate) { $libclang = $candidate }
+    }
+    if ($libclang) {
+        Write-Host "PASS  libclang found at $libclang" -ForegroundColor Green
+        Write-Host "INFO  libclang must match the Rust build host architecture."
+    } else {
+        Write-Host "FAIL  libclang.dll was not found; sherpa-rs-sys 0.6.8 requires it for bindgen." -ForegroundColor Red
+        $failures++
+    }
 } else {
     Write-Host "FAIL  Visual Studio Installer/vswhere was not found." -ForegroundColor Red
     $failures++

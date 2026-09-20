@@ -294,6 +294,20 @@ mod tests {
             VfError::InvalidAudioFile { detail: "x".into() }.code(),
             "InvalidAudioFile"
         );
+        assert_eq!(
+            VfError::FoundryEndpointRejected {
+                detail: "remote".into()
+            }
+            .code(),
+            "FoundryEndpointRejected"
+        );
+        assert_eq!(
+            VfError::TempAudioFailed {
+                detail: "denied".into()
+            }
+            .code(),
+            "TempAudioFailed"
+        );
     }
 
     #[test]

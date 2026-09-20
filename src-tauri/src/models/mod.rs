@@ -9,6 +9,7 @@
 //! engine-agnostic (no sherpa dependency) so it always compiles, even in the
 //! mock-only default build.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use futures_util::StreamExt;
@@ -286,17 +287,35 @@ pub struct DownloadProgress {
 
 /// Compute the lowercase-hex SHA-256 of a file.
 pub fn sha256_hex(path: &Path) -> Result<String, VfError> {
-    let bytes = std::fs::read(path).map_err(|e| VfError::ModelChecksumMismatch {
+    let mut file = std::fs::File::open(path).map_err(|e| VfError::ModelChecksumMismatch {
         detail: format!("could not read {} for hashing: {e}", path.display()),
     })?;
-    Ok(sha256_hex_bytes(&bytes))
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| VfError::ModelChecksumMismatch {
+                detail: format!("could not hash {}: {e}", path.display()),
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(hasher.finalize()))
 }
 
 /// Compute the lowercase-hex SHA-256 of an in-memory buffer.
+#[cfg(test)]
 pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let digest = hasher.finalize();
+    hex_digest(hasher.finalize())
+}
+
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
+    let digest = digest.as_ref();
     let mut out = String::with_capacity(digest.len() * 2);
     for b in digest {
         out.push_str(&format!("{b:02x}"));
@@ -453,6 +472,8 @@ where
             detail: format!("could not sync {}: {e}", part.display()),
         })?;
     drop(out);
+
+    verify_checksum(&part, file.sha256)?;
 
     tokio::fs::rename(&part, dest)
         .await
@@ -629,5 +650,15 @@ mod tests {
         let err = entry.verify(&root).unwrap_err();
         assert_eq!(err.code(), "ModelChecksumMismatch");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn partial_download_guard_removes_incomplete_file() {
+        let path = std::env::temp_dir().join(format!("vf-part-{}.part", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"incomplete").unwrap();
+        {
+            let _guard = PartialDownload::new(path.clone());
+        }
+        assert!(!path.exists());
     }
 }

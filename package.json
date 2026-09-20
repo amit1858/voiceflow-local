@@ -12,7 +12,7 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:sherpa": "tauri dev --features sherpa",
     "prepare:release-models": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\prepare-release-models.ps1",
-    "tauri:build": "npm run prepare:release-models && tauri build --features sherpa",
+    "tauri:build": "npm run prepare:release-models && tauri build --target x86_64-pc-windows-msvc --features sherpa --no-bundle && tauri bundle --target x86_64-pc-windows-msvc --features sherpa --config src-tauri/tauri.release.conf.json --bundles nsis msi",
     "tauri:build:sherpa": "npm run tauri:build"
   },
   "dependencies": {

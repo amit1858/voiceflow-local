@@ -10,10 +10,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$Destination = (Join-Path $PSScriptRoot "..\src-tauri\resources\models\stt\whisper-tiny-en")
+    [string]$Destination = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Destination)) {
+    $Destination = Join-Path $PSScriptRoot "..\src-tauri\resources\models\stt\whisper-tiny-en"
+}
 $Revision = "d026532c022fa99fd789d6b32446a1df7b6bfc43"
 $Base = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/$Revision"
 $Files = @(

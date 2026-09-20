@@ -316,6 +316,7 @@ fn validate_local_endpoint(endpoint: &str) -> Result<String, VfError> {
     let local = match parsed.host_str() {
         Some(host) if host.eq_ignore_ascii_case("localhost") => true,
         Some(host) => host
+            .trim_matches(['[', ']'])
             .parse::<IpAddr>()
             .map(|ip| ip.is_loopback())
             .unwrap_or(false),
@@ -338,10 +339,11 @@ fn validate_local_endpoint(endpoint: &str) -> Result<String, VfError> {
         .ok_or_else(|| VfError::FoundryEndpointRejected {
             detail: "Foundry endpoint has no host.".to_string(),
         })?;
-    let host = if raw_host.contains(':') {
-        format!("[{raw_host}]")
+    let normalized_host = raw_host.trim_matches(['[', ']']);
+    let host = if normalized_host.contains(':') {
+        format!("[{normalized_host}]")
     } else {
-        raw_host.to_string()
+        normalized_host.to_string()
     };
     Ok(format!("{}://{}:{}", parsed.scheme(), host, port))
 }

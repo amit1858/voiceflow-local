@@ -493,19 +493,6 @@ Settings to run these checks.",
         )];
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn readiness_status_never_passes_only_because_provider_is_inactive() {
-            assert!(matches!(status_for(true, true), HealthStatus::Pass));
-            assert!(matches!(status_for(true, false), HealthStatus::Fail));
-            assert!(matches!(status_for(false, false), HealthStatus::Skipped));
-            assert!(matches!(status_for(false, true), HealthStatus::Pass));
-        }
-    }
-
     let provider = FoundryLocalRewriteProvider::new(
         settings.foundry_model.clone(),
         settings.foundry_endpoint.clone(),
@@ -635,4 +622,17 @@ Settings to run these checks.",
     }
 
     checks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_status_never_passes_only_because_provider_is_inactive() {
+        assert!(matches!(status_for(true, true), HealthStatus::Pass));
+        assert!(matches!(status_for(true, false), HealthStatus::Fail));
+        assert!(matches!(status_for(false, false), HealthStatus::Skipped));
+        assert!(matches!(status_for(false, true), HealthStatus::Pass));
+    }
 }

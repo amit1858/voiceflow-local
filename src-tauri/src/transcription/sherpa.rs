@@ -258,4 +258,24 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code(), "SpeechEngineUnavailable");
     }
+
+    #[cfg(feature = "sherpa")]
+    #[tokio::test]
+    #[ignore = "requires a staged real model and known WAV"]
+    async fn real_model_known_wav_smoke() {
+        let root = PathBuf::from(
+            std::env::var("VOICEFLOW_STT_SMOKE_ROOT")
+                .expect("set VOICEFLOW_STT_SMOKE_ROOT to the models root"),
+        );
+        let wav = PathBuf::from(
+            std::env::var("VOICEFLOW_STT_SMOKE_WAV")
+                .expect("set VOICEFLOW_STT_SMOKE_WAV to a 16 kHz mono WAV"),
+        );
+        let provider = SherpaSttProvider::from_model(&root, "whisper-tiny-en").unwrap();
+        let transcript = provider.transcribe(&wav).await.unwrap();
+        println!("REAL_STT_TRANSCRIPT={transcript}");
+        let normalized = transcript.to_ascii_lowercase();
+        assert!(normalized.contains("early nightfall"));
+        assert!(normalized.contains("yellow lamps"));
+    }
 }
