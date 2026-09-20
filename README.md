@@ -205,6 +205,10 @@ Physical microphone and clean-machine offline acceptance must be performed by a
 human on the generated Windows installer; repository builds and known-WAV tests
 are not substitutes.
 
+For the complete nondeveloper procedure, artifact hash commands, safe corruption
+test, and required report format, use
+[`docs/windows-chunk1-acceptance.md`](docs/windows-chunk1-acceptance.md).
+
 ## Licensing
 
 `THIRD_PARTY_NOTICES.md` is packaged with consumer builds. sherpa-onnx and
