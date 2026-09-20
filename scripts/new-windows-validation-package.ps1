@@ -15,11 +15,17 @@ param(
     [ValidatePattern("^[0-9a-fA-F]{40}$")]
     [string]$CommitSha,
     [string]$BuildTimeUtc = ([DateTime]::UtcNow.ToString("o")),
-    [string]$ReleaseRoot = (Join-Path $PSScriptRoot "..\src-tauri\target\x86_64-pc-windows-msvc\release"),
-    [string]$ModelRoot = (Join-Path $PSScriptRoot "..\src-tauri\resources\models\stt\whisper-tiny-en")
+    [string]$ReleaseRoot = "",
+    [string]$ModelRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
+    $ReleaseRoot = Join-Path $PSScriptRoot "..\src-tauri\target\x86_64-pc-windows-msvc\release"
+}
+if ([string]::IsNullOrWhiteSpace($ModelRoot)) {
+    $ModelRoot = Join-Path $PSScriptRoot "..\src-tauri\resources\models\stt\whisper-tiny-en"
+}
 $ExpectedModel = [ordered]@{
     Id = "whisper-tiny-en"
     Revision = "d026532c022fa99fd789d6b32446a1df7b6bfc43"
