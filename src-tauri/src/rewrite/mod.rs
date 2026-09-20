@@ -125,7 +125,10 @@ mod tests {
         // Each instruction is distinct.
         let mut seen = std::collections::HashSet::new();
         for m in all {
-            assert!(seen.insert(m.instruction()), "duplicate instruction for {m:?}");
+            assert!(
+                seen.insert(m.instruction()),
+                "duplicate instruction for {m:?}"
+            );
         }
     }
 

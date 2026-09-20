@@ -33,6 +33,9 @@ lexicon.txt
 whisper-models/
 src-tauri/models/
 src-tauri/resources/
+!src-tauri/resources/
+src-tauri/resources/*
+!src-tauri/resources/.gitkeep
 # ONNX Runtime / sherpa-onnx prebuilt native libraries.
 *.dll
 *.dylib
@@ -46,4 +49,3 @@ settings.json
 .env
 .env.*
 !.env.example
-

@@ -51,10 +51,12 @@ export type VfErrorCode =
   | "AudioStopFailed"
   | "AudioCaptureFailed"
   | "InvalidAudioFile"
+  | "TempAudioFailed"
   | "TempCleanupFailed"
   | "RecordingTooShort"
   | "NoSpeechDetected"
   | "SpeechEngineUnavailable"
+  | "MockTranscriptionDisabled"
   | "ModelMissing"
   | "ModelInvalid"
   | "ModelLoadFailed"
@@ -69,6 +71,7 @@ export type VfErrorCode =
   | "FoundryNotInstalled"
   | "FoundryServiceNotRunning"
   | "FoundryPortNotDiscovered"
+  | "FoundryEndpointRejected"
   | "PhiNotInstalled"
   | "FoundryNoResponse"
   | "FoundryTimeout"
@@ -117,6 +120,10 @@ export interface ModelInfo {
   bundled: boolean;
   approx_mb: number;
   installed: boolean;
+  verified: boolean;
+  source: string;
+  revision: string;
+  license: string;
 }
 
 /** A synthesizable TTS voice. Matches Rust `Voice`. */
@@ -142,6 +149,8 @@ export interface Capabilities {
   /** True when the running build has the real sherpa-onnx speech engine. */
   speech_engine: boolean;
   stt_model_installed: boolean;
+  stt_model_verified: boolean;
+  mock_transcription_available: boolean;
   tts_voice_installed: boolean;
   audio_output_available: boolean;
 }
@@ -196,6 +205,8 @@ export const ERROR_REMEDIATION: Record<VfErrorCode, string> = {
     "Audio capture failed. Check that your microphone is working and not in use by another app.",
   InvalidAudioFile:
     "The captured audio was missing or invalid. Record again and speak close to the mic.",
+  TempAudioFailed:
+    "VoiceFlow could not create its private temporary audio folder. Check free space and folder permissions.",
   TempCleanupFailed:
     "Temporary audio files could not be removed. You can retry from Settings → Clear temp files.",
   RecordingTooShort:
@@ -204,6 +215,8 @@ export const ERROR_REMEDIATION: Record<VfErrorCode, string> = {
     "No speech was detected — the mic level was basically silent. Move closer to the mic and try again.",
   SpeechEngineUnavailable:
     "This build has no local speech engine. Use the speech-enabled release build (prebuilt binaries, no toolchain) — or keep using the Mock providers.",
+  MockTranscriptionDisabled:
+    "Canned transcription is disabled in consumer builds. Install or repair the local speech model.",
   ModelMissing:
     "The local speech model file is missing. See the hint for the expected path, or download it from Settings.",
   ModelInvalid:
@@ -231,6 +244,8 @@ export const ERROR_REMEDIATION: Record<VfErrorCode, string> = {
     "The Foundry Local service is not running. Run `foundry service start` and retry.",
   FoundryPortNotDiscovered:
     "Could not discover the Foundry Local endpoint. Restart the service or set a manual endpoint override in Settings.",
+  FoundryEndpointRejected:
+    "Foundry Local is restricted to loopback endpoints such as http://127.0.0.1:5273.",
   PhiNotInstalled:
     "The Phi model isn't installed in Foundry Local. Run `foundry model download phi-4-mini-instruct` then `foundry model load phi-4-mini-instruct`.",
   FoundryNoResponse:

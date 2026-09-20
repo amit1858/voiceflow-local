@@ -20,8 +20,7 @@ use crate::tts::{Synthesized, TtsProvider, Voice};
 
 /// Hint shown when the selected voice's files are absent.
 const VOICE_DOWNLOAD_HINT: &str =
-    "Open Settings and download the voice, or run scripts/setup-local-models.ps1. \
-The bundled default voice also ships with the packaged app.";
+    "Open Settings and download the voice, or run scripts/setup-local-models.ps1.";
 
 /// Text-to-speech provider backed by sherpa-onnx (VITS ONNX).
 #[derive(Debug)]
@@ -37,7 +36,9 @@ impl SherpaTtsProvider {
     pub fn from_voice(models_root: &Path, voice_id: &str) -> Result<Self, VfError> {
         let entry = models::find(voice_id)
             .filter(|e| e.kind == ModelKind::Tts)
-            .ok_or_else(|| VfError::UnknownModel { id: voice_id.to_string() })?;
+            .ok_or_else(|| VfError::UnknownModel {
+                id: voice_id.to_string(),
+            })?;
 
         let role = |r: FileRole| {
             entry
@@ -65,7 +66,9 @@ impl SherpaTtsProvider {
     /// [`VfError::TtsVoiceMissing`] otherwise.
     pub fn ensure_voice_present(&self) -> Result<(), VfError> {
         for path in [&self.model, &self.tokens, &self.lexicon] {
-            let present = std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
+            let present = std::fs::metadata(path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
             if !present {
                 return Err(VfError::TtsVoiceMissing {
                     expected_path: path.display().to_string(),
@@ -73,7 +76,19 @@ impl SherpaTtsProvider {
                 });
             }
         }
-        Ok(())
+        let root = self
+            .model
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or_else(|| VfError::ModelInvalid {
+                detail: format!("invalid voice path {}", self.model.display()),
+            })?;
+        models::find(&self.voice_id)
+            .ok_or_else(|| VfError::UnknownModel {
+                id: self.voice_id.clone(),
+            })?
+            .verify(root)
     }
 }
 
@@ -89,7 +104,9 @@ impl TtsProvider for SherpaTtsProvider {
 
         tokio::task::spawn_blocking(move || run_sherpa_tts(&model, &tokens, &lexicon, &text))
             .await
-            .map_err(|e| VfError::TtsSynthFailed { detail: format!("join error: {e}") })?
+            .map_err(|e| VfError::TtsSynthFailed {
+                detail: format!("join error: {e}"),
+            })?
     }
 
     fn list_voices(&self) -> Vec<Voice> {
@@ -137,7 +154,9 @@ fn run_sherpa_tts(
     let mut tts = VitsTts::new(config);
     let audio = tts
         .create(text, 0, 1.0)
-        .map_err(|e| VfError::TtsSynthFailed { detail: e.to_string() })?;
+        .map_err(|e| VfError::TtsSynthFailed {
+            detail: e.to_string(),
+        })?;
 
     Ok(Synthesized {
         samples: audio.samples,
@@ -188,16 +207,13 @@ mod tests {
     #[cfg(not(feature = "sherpa"))]
     #[tokio::test]
     async fn synthesize_without_feature_is_engine_unavailable() {
-        let root = std::env::temp_dir().join(format!("vf-tts2-{}", uuid::Uuid::new_v4()));
-        let entry = models::find("vits-ljs").unwrap();
-        let dir = entry.dir(&root);
-        std::fs::create_dir_all(&dir).unwrap();
-        for f in entry.files {
-            std::fs::write(dir.join(f.filename), b"x").unwrap();
-        }
-        let p = SherpaTtsProvider::from_voice(&root, "vits-ljs").unwrap();
-        let err = p.synthesize("hello").await.unwrap_err();
+        let err = run_sherpa_tts(
+            Path::new("model"),
+            Path::new("tokens"),
+            Path::new("lexicon"),
+            "hello",
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "SpeechEngineUnavailable");
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

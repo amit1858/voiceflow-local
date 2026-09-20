@@ -433,6 +433,9 @@ export default function App() {
               onDownload={handleDownload}
               downloadingId={downloadingId}
               downloadLabel={downloadLabel}
+              mockTranscriptionAvailable={
+                capabilities?.mock_transcription_available ?? false
+              }
             />
           ) : (
             <p>Loading settings…</p>

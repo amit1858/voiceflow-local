@@ -29,15 +29,14 @@ pub fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     }
 
     // Allocate the temp path; the RAII guard deletes the file when dropped.
-    let temp = TempWav::new();
+    let temp = TempWav::new()?;
 
     // Emit a live input level (~10×/second) so the UI can show a mic meter and
     // the user can see whether the mic is actually picking up sound.
     let level_app = app.clone();
-    let on_level: crate::audio::recorder::LevelCb =
-        std::sync::Arc::new(move |level: f32| {
-            let _ = level_app.emit("input-level", level);
-        });
+    let on_level: crate::audio::recorder::LevelCb = std::sync::Arc::new(move |level: f32| {
+        let _ = level_app.emit("input-level", level);
+    });
     let active = ActiveRecording::start(temp.path().to_path_buf(), Some(on_level))?;
 
     *guard = Some(RecordingSession { active, temp });
@@ -65,7 +64,20 @@ pub async fn stop_and_process(
 
     // `temp` is our RAII guard: on any early return below it drops and deletes
     // the WAV. We also call `cleanup()` explicitly on the success path.
-    let wav_path = active.stop()?;
+    let wav_path = match active.stop() {
+        Ok(path) => path,
+        Err(process_error) => {
+            return match temp.cleanup() {
+                Ok(()) => Err(process_error),
+                Err(cleanup_error) => Err(VfError::TempCleanupFailed {
+                    detail: format!(
+                        "{cleanup_error}; capture also failed with {}",
+                        process_error
+                    ),
+                }),
+            };
+        }
+    };
 
     // Build providers from the current settings (mock-first by default). A
     // misconfigured real provider fails closed here with a typed error (the
@@ -77,10 +89,17 @@ pub async fn stop_and_process(
     let result = run_pipeline(&wav_path, mode, &*transcriber, &*rewriter, &style).await;
 
     // Explicit cleanup on the happy path (Drop still covers error/panic paths).
-    temp.cleanup();
+    let cleanup = temp.cleanup();
     drop(temp);
 
-    result
+    match (result, cleanup) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(process_error), Err(cleanup_error)) => Err(VfError::TempCleanupFailed {
+            detail: format!("{cleanup_error}; processing also failed with {process_error}"),
+        }),
+    }
 }
 
 /// Cancel an in-progress recording and discard the audio without processing.
@@ -96,7 +115,7 @@ pub fn cancel_recording(state: State<'_, AppState>) -> Result<(), VfError> {
 
     if let Some(RecordingSession { active, temp }) = session {
         active.cancel();
-        temp.cleanup(); // drop also cleans up, but be explicit
+        temp.cleanup()?;
     }
     Ok(())
 }
@@ -164,8 +183,9 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, VfError> {
 pub fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<Settings, VfError> {
+    settings.normalize_for_runtime();
     settings.save(&state.app_data_dir)?;
 
     // Determine the previous hotkey so we can re-register if it changed.
@@ -200,9 +220,7 @@ pub fn save_settings(
 
 /// Run all provider/environment health checks against the current settings.
 #[tauri::command]
-pub async fn run_health_checks(
-    state: State<'_, AppState>,
-) -> Result<Vec<HealthCheck>, VfError> {
+pub async fn run_health_checks(state: State<'_, AppState>) -> Result<Vec<HealthCheck>, VfError> {
     let settings = state.current_settings();
     Ok(health::run_health_checks(&settings, &state.model_dir).await)
 }
@@ -211,29 +229,29 @@ pub async fn run_health_checks(
 /// removed. Never a hard error unless the temp dir itself is unreadable.
 #[tauri::command]
 pub fn clear_temp_files() -> Result<usize, VfError> {
-    let dir = std::env::temp_dir();
-    let entries = std::fs::read_dir(&dir).map_err(|e| VfError::TempCleanupFailed {
-        detail: format!("could not read {}: {e}", dir.display()),
-    })?;
-
-    let mut removed = 0usize;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("voiceflow-") && name.ends_with(".wav") {
-            if std::fs::remove_file(entry.path()).is_ok() {
-                removed += 1;
-            }
-        }
+    let report = crate::audio::temp::cleanup_stale()?;
+    if !report.failures.is_empty() {
+        return Err(VfError::TempCleanupFailed {
+            detail: format!(
+                "removed {} file(s), but {} cleanup(s) failed: {}",
+                report.removed,
+                report.failures.len(),
+                report.failures.join("; ")
+            ),
+        });
     }
-    Ok(removed)
+    Ok(report.removed)
 }
 
 /// Synthesize `text` with the active TTS provider and play it on the default
 /// output device. This is a **post-preview** action (Speak / auto-speak) and is
 /// never part of `run_pipeline`. Any currently-playing audio is stopped first.
 #[tauri::command]
-pub async fn speak(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), VfError> {
+pub async fn speak(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<(), VfError> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err(VfError::TtsSynthFailed {
@@ -290,7 +308,9 @@ pub async fn download_model(
     let models_root = state.model_dir.clone();
     let client = reqwest::Client::builder()
         .build()
-        .map_err(|e| VfError::ModelDownloadFailed { detail: e.to_string() })?;
+        .map_err(|e| VfError::ModelDownloadFailed {
+            detail: e.to_string(),
+        })?;
 
     let emit_app = app.clone();
     crate::models::download_model(&models_root, &id, &client, move |p| {

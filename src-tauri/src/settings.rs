@@ -1,10 +1,8 @@
 //! User settings: provider selection, hotkey, defaults, and model choices.
 //!
-//! Mock-first: a fresh install defaults **both** speech providers (STT + TTS)
-//! and the rewrite provider to `Mock`, so the whole record → transcribe →
-//! rewrite → preview → copy (and Speak) workflow runs end-to-end with zero local
-//! models installed. Users switch to the local Sherpa / Foundry providers from
-//! the Settings screen once ready.
+//! Debug builds retain explicit mock providers for development. Consumer
+//! release builds default to Sherpa STT and migrate any persisted mock STT
+//! selection to the real local provider.
 //!
 //! Settings persist to `<app data>/settings.json` (local config, git-ignored).
 //! Transcripts and audio are never persisted — only these preferences are.
@@ -70,7 +68,7 @@ fn default_tts_voice() -> String {
 }
 
 fn default_transcription_provider() -> TranscriptionKind {
-    TranscriptionKind::Mock
+    Settings::runtime_mode().default_transcription_provider()
 }
 
 fn default_tts_provider() -> TtsKind {
@@ -135,14 +133,21 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn runtime_mode() -> RuntimeMode {
+        if cfg!(debug_assertions) {
+            RuntimeMode::Development
+        } else {
+            RuntimeMode::Consumer
+        }
+    }
+
     /// Build defaults. `_model_dir` is kept for signature stability with callers
     /// (models are now resolved by registry id under the app-data models dir).
     pub fn defaults(_model_dir: &Path) -> Self {
         Settings {
             hotkey: DEFAULT_HOTKEY.to_string(),
             default_mode: OutputMode::Raw,
-            // Mock-first: zero local setup required for a fresh checkout.
-            transcription_provider: TranscriptionKind::Mock,
+            transcription_provider: Self::runtime_mode().default_transcription_provider(),
             rewrite_provider: RewriteKind::Mock,
             stt_model: default_stt_model(),
             tts_provider: TtsKind::Mock,
@@ -170,7 +175,7 @@ impl Settings {
                 Ok(mut settings) => {
                     // Repair any unknown/blank model ids after migration so we
                     // never point the engine at a model that isn't registered.
-                    settings.normalize();
+                    settings.normalize_for_mode(Self::runtime_mode());
                     // Persist the upgraded shape so the file is current.
                     let _ = settings.save(app_data_dir);
                     settings
@@ -191,13 +196,22 @@ impl Settings {
 
     /// Ensure model ids reference registered models; fall back to the bundled
     /// defaults otherwise.
-    fn normalize(&mut self) {
+    fn normalize_for_mode(&mut self, mode: RuntimeMode) {
+        if !mode.mock_transcription_allowed()
+            && self.transcription_provider == TranscriptionKind::Mock
+        {
+            self.transcription_provider = TranscriptionKind::Sherpa;
+        }
         if models::find(&self.stt_model).map(|e| e.kind) != Some(ModelKind::Stt) {
             self.stt_model = default_stt_model();
         }
         if models::find(&self.tts_voice).map(|e| e.kind) != Some(ModelKind::Tts) {
             self.tts_voice = default_tts_voice();
         }
+    }
+
+    pub fn normalize_for_runtime(&mut self) {
+        self.normalize_for_mode(Self::runtime_mode());
     }
 
     /// Persist settings to `<app data>/settings.json`.
@@ -215,14 +229,44 @@ impl Settings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeMode {
+    Development,
+    Consumer,
+}
+
+impl RuntimeMode {
+    pub fn default_transcription_provider(self) -> TranscriptionKind {
+        match self {
+            RuntimeMode::Development => TranscriptionKind::Mock,
+            RuntimeMode::Consumer => TranscriptionKind::Sherpa,
+        }
+    }
+
+    pub fn mock_transcription_allowed(self) -> bool {
+        matches!(self, RuntimeMode::Development)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_mock_first() {
+    fn development_and_consumer_defaults_are_distinct() {
+        assert_eq!(
+            RuntimeMode::Development.default_transcription_provider(),
+            TranscriptionKind::Mock
+        );
+        assert_eq!(
+            RuntimeMode::Consumer.default_transcription_provider(),
+            TranscriptionKind::Sherpa
+        );
         let s = Settings::defaults(Path::new("."));
-        assert_eq!(s.transcription_provider, TranscriptionKind::Mock);
+        assert_eq!(
+            s.transcription_provider,
+            Settings::runtime_mode().default_transcription_provider()
+        );
         assert_eq!(s.tts_provider, TtsKind::Mock);
         assert_eq!(s.rewrite_provider, RewriteKind::Mock);
         assert!(!s.auto_speak);
@@ -245,7 +289,7 @@ mod tests {
             "auto_copy": true
         }"#;
         let mut s: Settings = serde_json::from_str(legacy).expect("legacy settings should migrate");
-        s.normalize();
+        s.normalize_for_mode(RuntimeMode::Development);
         // Legacy provider maps to Sherpa; unknown fields are dropped.
         assert_eq!(s.transcription_provider, TranscriptionKind::Sherpa);
         // Preserved fields survive migration.
@@ -265,7 +309,7 @@ mod tests {
         let mut s = Settings::defaults(Path::new("."));
         s.stt_model = "no-such-model".to_string();
         s.tts_voice = "no-such-voice".to_string();
-        s.normalize();
+        s.normalize_for_mode(RuntimeMode::Development);
         assert_eq!(s.stt_model, "whisper-tiny-en");
         assert_eq!(s.tts_voice, "vits-ljs");
     }
@@ -278,5 +322,13 @@ mod tests {
         assert_eq!(back.transcription_provider, s.transcription_provider);
         assert_eq!(back.tts_provider, s.tts_provider);
         assert_eq!(back.stt_model, s.stt_model);
+    }
+
+    #[test]
+    fn consumer_migration_never_keeps_mock_transcription() {
+        let mut settings = Settings::defaults(Path::new("."));
+        settings.transcription_provider = TranscriptionKind::Mock;
+        settings.normalize_for_mode(RuntimeMode::Consumer);
+        assert_eq!(settings.transcription_provider, TranscriptionKind::Sherpa);
     }
 }

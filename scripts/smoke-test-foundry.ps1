@@ -36,6 +36,13 @@ function Pass($t) { Write-Host "  PASS  $t" -ForegroundColor Green }
 function Fail($t) { Write-Host "  FAIL  $t" -ForegroundColor Red; $script:failures++ }
 function Info($t) { Write-Host "  ....  $t" -ForegroundColor Gray }
 function Head($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
+function Assert-LoopbackEndpoint([string]$Value) {
+    $uri = [uri]$Value
+    $isLoopback = $uri.IsLoopback -or $uri.Host -eq "localhost"
+    if (($uri.Scheme -ne "http" -and $uri.Scheme -ne "https") -or -not $isLoopback) {
+        throw "Foundry endpoint must be loopback HTTP(S), got '$Value'."
+    }
+}
 
 # Central style rules — kept in sync with src-tauri/src/rewrite/style.rs.
 $styleSystem = @"
@@ -70,7 +77,11 @@ if (-not $Endpoint) {
     try {
         Info "Ensuring service is running (foundry service start)..."
         foundry service start 2>&1 | Out-Null
-    } catch { }
+        if ($LASTEXITCODE -ne 0) { throw "foundry service start exited $LASTEXITCODE" }
+    } catch {
+        Fail "Could not start Foundry Local: $($_.Exception.Message)"
+        exit 1
+    }
     $status = ""
     try { $status = (foundry service status 2>&1 | Out-String) } catch { $status = "" }
     $m = [regex]::Match($status, "https?://[^\s""',]+")
@@ -85,6 +96,11 @@ if (-not $Endpoint) {
 } else {
     $Endpoint = $Endpoint.TrimEnd('/')
     Pass "Using endpoint override: $Endpoint"
+}
+try { Assert-LoopbackEndpoint $Endpoint }
+catch {
+    Fail $_.Exception.Message
+    exit 1
 }
 
 Head "Model availability"

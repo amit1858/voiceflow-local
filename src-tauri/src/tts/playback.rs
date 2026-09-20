@@ -66,7 +66,9 @@ where
         let sink = match Sink::try_new(&handle) {
             Ok(s) => s,
             Err(e) => {
-                let _ = ready_tx.send(Err(VfError::TtsPlaybackFailed { detail: e.to_string() }));
+                let _ = ready_tx.send(Err(VfError::TtsPlaybackFailed {
+                    detail: e.to_string(),
+                }));
                 return;
             }
         };
@@ -93,7 +95,10 @@ where
     });
 
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(ActivePlayback { stop, thread: Some(thread) }),
+        Ok(Ok(())) => Ok(ActivePlayback {
+            stop,
+            thread: Some(thread),
+        }),
         Ok(Err(e)) => {
             let _ = thread.join();
             Err(e)

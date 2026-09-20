@@ -23,18 +23,21 @@ pub fn write_wav_16k_mono(path: &Path, samples: &[i16]) -> Result<(), VfError> {
         sample_format: SampleFormat::Int,
     };
 
-    let mut writer = WavWriter::create(path, spec)
-        .map_err(|e| VfError::AudioCaptureFailed { detail: format!("WAV create failed: {e}") })?;
+    let mut writer = WavWriter::create(path, spec).map_err(|e| VfError::AudioCaptureFailed {
+        detail: format!("WAV create failed: {e}"),
+    })?;
 
     for &s in samples {
         writer
             .write_sample(s)
-            .map_err(|e| VfError::AudioCaptureFailed { detail: format!("WAV write failed: {e}") })?;
+            .map_err(|e| VfError::AudioCaptureFailed {
+                detail: format!("WAV write failed: {e}"),
+            })?;
     }
 
-    writer
-        .finalize()
-        .map_err(|e| VfError::AudioCaptureFailed { detail: format!("WAV finalize failed: {e}") })?;
+    writer.finalize().map_err(|e| VfError::AudioCaptureFailed {
+        detail: format!("WAV finalize failed: {e}"),
+    })?;
 
     Ok(())
 }
@@ -72,8 +75,9 @@ mod tests {
 /// `sherpa` feature.
 #[cfg_attr(not(feature = "sherpa"), allow(dead_code))]
 pub fn read_wav_as_f32_mono(path: &Path) -> Result<(Vec<f32>, u32), VfError> {
-    let mut reader = hound::WavReader::open(path)
-        .map_err(|e| VfError::TranscriptionFailed { detail: format!("WAV open failed: {e}") })?;
+    let mut reader = hound::WavReader::open(path).map_err(|e| VfError::TranscriptionFailed {
+        detail: format!("WAV open failed: {e}"),
+    })?;
 
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;

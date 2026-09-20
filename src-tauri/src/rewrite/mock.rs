@@ -55,7 +55,9 @@ impl RewriteProvider for MockRewriteProvider {
             ),
         };
 
-        Ok(format!("{out}\n\n[mock rewrite — enable Foundry Local for model output]"))
+        Ok(format!(
+            "{out}\n\n[mock rewrite — enable Foundry Local for model output]"
+        ))
     }
 }
 
@@ -67,8 +69,14 @@ mod tests {
     async fn mock_is_deterministic_and_mode_shaped() {
         let p = MockRewriteProvider::new();
         let style = StyleRules::default();
-        let a = p.rewrite("we should ship on friday", OutputMode::Teams, &style).await.unwrap();
-        let b = p.rewrite("we should ship on friday", OutputMode::Teams, &style).await.unwrap();
+        let a = p
+            .rewrite("we should ship on friday", OutputMode::Teams, &style)
+            .await
+            .unwrap();
+        let b = p
+            .rewrite("we should ship on friday", OutputMode::Teams, &style)
+            .await
+            .unwrap();
         assert_eq!(a, b, "mock output must be deterministic");
         assert!(a.starts_with("Hi team"), "Teams mode should be shaped");
     }
@@ -77,7 +85,10 @@ mod tests {
     async fn mock_strips_kindly_via_style() {
         let p = MockRewriteProvider::new();
         let style = StyleRules::default();
-        let out = p.rewrite("kindly review the doc", OutputMode::Raw, &style).await.unwrap();
+        let out = p
+            .rewrite("kindly review the doc", OutputMode::Raw, &style)
+            .await
+            .unwrap();
         assert!(!out.to_lowercase().contains("kindly"));
     }
 }

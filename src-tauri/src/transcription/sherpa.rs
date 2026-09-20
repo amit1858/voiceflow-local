@@ -20,11 +20,6 @@ use crate::errors::VfError;
 use crate::models::{self, FileRole, ModelKind};
 use crate::transcription::TranscriptionProvider;
 
-/// Hint shown when the STT model files are absent.
-const MODEL_DOWNLOAD_HINT: &str =
-    "Open Settings and download the speech-to-text model, or run \
-scripts/setup-local-models.ps1. The bundled tiny model also ships with the packaged app.";
-
 /// Transcription provider backed by sherpa-onnx (Whisper ONNX).
 #[derive(Debug)]
 pub struct SherpaSttProvider {
@@ -38,9 +33,11 @@ pub struct SherpaSttProvider {
 impl SherpaSttProvider {
     /// Resolve a provider for STT model `model_id` under `models_root`.
     pub fn from_model(models_root: &Path, model_id: &str) -> Result<Self, VfError> {
-        let entry = models::find(model_id).filter(|e| e.kind == ModelKind::Stt).ok_or_else(
-            || VfError::UnknownModel { id: model_id.to_string() },
-        )?;
+        let entry = models::find(model_id)
+            .filter(|e| e.kind == ModelKind::Stt)
+            .ok_or_else(|| VfError::UnknownModel {
+                id: model_id.to_string(),
+            })?;
 
         let role = |r: FileRole| {
             entry
@@ -68,16 +65,35 @@ impl SherpaSttProvider {
     /// Verify every model file exists, returning a precise
     /// [`VfError::ModelMissing`] otherwise.
     pub fn ensure_model_present(&self) -> Result<(), VfError> {
-        for path in [&self.encoder, &self.decoder, &self.tokens] {
-            let present = std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
-            if !present {
-                return Err(VfError::ModelMissing {
-                    expected_path: path.display().to_string(),
-                    hint: MODEL_DOWNLOAD_HINT.to_string(),
-                });
-            }
-        }
-        Ok(())
+        let entry = models::find(&self.model_id).ok_or_else(|| VfError::UnknownModel {
+            id: self.model_id.clone(),
+        })?;
+        entry.verify(
+            self.encoder
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .ok_or_else(|| VfError::ModelInvalid {
+                    detail: format!("invalid model path {}", self.encoder.display()),
+                })?,
+        )
+    }
+
+    /// Verify checksums and prove the ONNX recognizer can load the selected
+    /// model without requiring microphone input.
+    pub async fn check_ready(&self) -> Result<(), VfError> {
+        self.ensure_model_present()?;
+        let encoder = self.encoder.clone();
+        let decoder = self.decoder.clone();
+        let tokens = self.tokens.clone();
+        let language = self.language.clone();
+        tokio::task::spawn_blocking(move || {
+            check_sherpa_model(&encoder, &decoder, &tokens, &language)
+        })
+        .await
+        .map_err(|e| VfError::ModelLoadFailed {
+            detail: format!("model readiness task failed: {e}"),
+        })?
     }
 }
 
@@ -94,9 +110,13 @@ impl TranscriptionProvider for SherpaSttProvider {
 
         // ONNX inference is CPU-heavy and blocking — run it off the async
         // executor so Tauri's runtime is never stalled.
-        tokio::task::spawn_blocking(move || run_sherpa(&encoder, &decoder, &tokens, &language, &wav))
-            .await
-            .map_err(|e| VfError::TranscriptionFailed { detail: format!("join error: {e}") })?
+        tokio::task::spawn_blocking(move || {
+            run_sherpa(&encoder, &decoder, &tokens, &language, &wav)
+        })
+        .await
+        .map_err(|e| VfError::TranscriptionFailed {
+            detail: format!("join error: {e}"),
+        })?
     }
 }
 
@@ -119,6 +139,11 @@ fn run_sherpa(
             detail: format!("expected {TARGET_SAMPLE_RATE} Hz audio, got {sample_rate} Hz"),
         });
     }
+    if samples.is_empty() {
+        return Err(VfError::InvalidAudioFile {
+            detail: format!("{} contains no audio samples", wav.display()),
+        });
+    }
 
     let config = WhisperConfig {
         decoder: decoder.to_string_lossy().to_string(),
@@ -129,11 +154,54 @@ fn run_sherpa(
         ..Default::default()
     };
 
-    let mut recognizer = WhisperRecognizer::new(config)
-        .map_err(|e| VfError::ModelLoadFailed { detail: e.to_string() })?;
+    let mut recognizer = WhisperRecognizer::new(config).map_err(|e| VfError::ModelLoadFailed {
+        detail: e.to_string(),
+    })?;
 
     let result = recognizer.transcribe(sample_rate, &samples);
-    Ok(result.text.trim().to_string())
+    let text = result.text.trim().to_string();
+    if text.is_empty() {
+        return Err(VfError::NoSpeechDetected {
+            detail: "The local speech engine returned an empty transcript.".to_string(),
+        });
+    }
+    Ok(text)
+}
+
+#[cfg(feature = "sherpa")]
+fn check_sherpa_model(
+    encoder: &Path,
+    decoder: &Path,
+    tokens: &Path,
+    language: &str,
+) -> Result<(), VfError> {
+    use sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer};
+
+    let config = WhisperConfig {
+        decoder: decoder.to_string_lossy().to_string(),
+        encoder: encoder.to_string_lossy().to_string(),
+        tokens: tokens.to_string_lossy().to_string(),
+        language: language.to_string(),
+        num_threads: Some(2),
+        ..Default::default()
+    };
+    WhisperRecognizer::new(config)
+        .map(|_| ())
+        .map_err(|e| VfError::ModelLoadFailed {
+            detail: e.to_string(),
+        })
+}
+
+#[cfg(not(feature = "sherpa"))]
+fn check_sherpa_model(
+    _encoder: &Path,
+    _decoder: &Path,
+    _tokens: &Path,
+    _language: &str,
+) -> Result<(), VfError> {
+    Err(VfError::SpeechEngineUnavailable {
+        detail: "This build was compiled without the `sherpa` feature.".to_string(),
+    })
 }
 
 #[cfg(not(feature = "sherpa"))]
@@ -180,20 +248,34 @@ mod tests {
     #[cfg(not(feature = "sherpa"))]
     #[tokio::test]
     async fn transcribe_without_feature_is_engine_unavailable() {
-        // Point at a real (existing) file so we pass the presence check and hit
-        // the feature stub. Reuse this source file as a stand-in.
-        let root = std::env::temp_dir().join(format!("vf-stt2-{}", uuid::Uuid::new_v4()));
-        let entry = models::find("whisper-tiny-en").unwrap();
-        let dir = entry.dir(&root);
-        std::fs::create_dir_all(&dir).unwrap();
-        for f in entry.files {
-            std::fs::write(dir.join(f.filename), b"x").unwrap();
-        }
-        let p = SherpaSttProvider::from_model(&root, "whisper-tiny-en").unwrap();
-        let wav = dir.join("in.wav");
-        std::fs::write(&wav, b"x").unwrap();
-        let err = p.transcribe(&wav).await.unwrap_err();
+        let err = run_sherpa(
+            Path::new("encoder"),
+            Path::new("decoder"),
+            Path::new("tokens"),
+            "en",
+            Path::new("audio.wav"),
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "SpeechEngineUnavailable");
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(feature = "sherpa")]
+    #[tokio::test]
+    #[ignore = "requires a staged real model and known WAV"]
+    async fn real_model_known_wav_smoke() {
+        let root = PathBuf::from(
+            std::env::var("VOICEFLOW_STT_SMOKE_ROOT")
+                .expect("set VOICEFLOW_STT_SMOKE_ROOT to the models root"),
+        );
+        let wav = PathBuf::from(
+            std::env::var("VOICEFLOW_STT_SMOKE_WAV")
+                .expect("set VOICEFLOW_STT_SMOKE_WAV to a 16 kHz mono WAV"),
+        );
+        let provider = SherpaSttProvider::from_model(&root, "whisper-tiny-en").unwrap();
+        let transcript = provider.transcribe(&wav).await.unwrap();
+        println!("REAL_STT_TRANSCRIPT={transcript}");
+        let normalized = transcript.to_ascii_lowercase();
+        assert!(normalized.contains("early nightfall"));
+        assert!(normalized.contains("yellow lamps"));
     }
 }

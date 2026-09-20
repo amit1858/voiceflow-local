@@ -1,312 +1,131 @@
 # VoiceFlow Local
 
-**Local-first voice-to-clipboard desktop assistant.** Press a global hotkey,
-speak, press it again, and get polished text on your clipboard — transcribed and
-rewritten entirely on your own machine. You can also have the result **read back
-aloud** with a local neural voice. Windows-first. Built with **Tauri v2 + React +
-TypeScript** with a **Rust** backend.
+Windows-first, local speech-to-clipboard built with Tauri v2, React, TypeScript,
+Rust, CPAL, and sherpa-onnx. The core path is:
 
-No cloud. No API keys. No transcript history. No database. Nothing is sent
-anywhere, and the temporary audio file is deleted after every use.
-
-> **Mock-first:** a fresh checkout runs the whole record → transcribe → rewrite →
-> preview → copy (→ speak) workflow **with zero setup**, using deterministic mock
-> providers. The packaged build additionally ships a tiny real STT model and a
-> default neural TTS voice so **real speech-to-text and text-to-speech work out of
-> the box — with no C/C++ build toolchain required.**
-
----
-
-## What's new in v2
-
-- **Real local STT that actually works out of the box.** v1's local transcription
-  required compiling whisper.cpp from source (CMake + MSVC C++ + a specific
-  libclang) and the default build silently fell back to a canned mock. v2 replaces
-  that with **[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)** via the
-  **[`sherpa-rs`](https://crates.io/crates/sherpa-rs)** crate. Its
-  `download-binaries` feature fetches **prebuilt** ONNX Runtime + sherpa-onnx
-  native libraries, so **end users need no CMake / C++ / libclang**.
-- **Local neural text-to-speech.** A new `TtsProvider` trait with a mock voice
-  (default) and a sherpa-onnx VITS voice. A **Speak / Stop** button on the preview
-  reads the output aloud, and an **auto-speak** setting (default **off**) can speak
-  automatically after processing.
-- **Model manager.** A tiny STT model and one TTS voice are **bundled** for offline
-  first run; larger STT models and extra voices are **optional, checksum-verified
-  downloads** with live progress in Settings.
-- **Audio guard.** A quick tap or a silent mic now returns a clear typed message
-  (*recording too short* / *no speech detected*) instead of an empty transcript,
-  and a **live input-level meter** shows your mic is being heard.
-- **Capability badge + honest health checks.** The header shows whether the running
-  build has the **real speech engine** or is **mock-only**, so selecting a local
-  provider is never a silent trap.
-
-The **Foundry Local + `phi-4-mini-instruct`** rewrite path is unchanged. Foundry /
-Phi is a **text LLM** and is used **only** for the rewrite step — it does not (and
-cannot) do speech-to-text or text-to-speech; those use dedicated ONNX speech
-models.
-
----
-
-## What it is
-
-VoiceFlow Local turns spoken words into clean, ready-to-paste text:
-
-1. Press the global hotkey (**`Ctrl+Shift+Space`** by default) to start recording.
-   A visible indicator and a live level meter show you're being heard.
-2. Press it again to stop.
-3. The app captures your mic to a temporary 16 kHz mono WAV in the OS temp dir.
-4. It **transcribes locally** (mock provider by default; sherpa-onnx Whisper when
-   selected).
-5. It **rewrites locally** into your selected output mode (mock provider by
-   default; **Microsoft Foundry Local** running **`phi-4-mini-instruct`** when
-   enabled).
-6. You see an **editable preview**. Edit if you like, then click **Copy** (or
-   enable auto-copy). Optionally click **Speak** to hear it. The temporary WAV is
-   deleted.
-
-### Output modes
-
-| Mode | Behavior |
-| --- | --- |
-| **Raw transcript** | Fix punctuation + obvious speech errors only; add no new meaning. Bypasses the rewrite model (style filter still applies). |
-| **Teams message** | Short, crisp, conversational, professional — usually a greeting + a clear ask/next step. |
-| **Email** | Greeting, context, main point, ask/next step, closing. |
-| **Product note** | Structured notes with headings where helpful; practical. |
-| **Executive summary** | Context, key point, why it matters, risk/decision, next step. |
-
-### Writing style
-
-Every output — including the raw transcript — is passed through a central style
-filter and the style is also injected into the rewrite model's system prompt:
-
-- Simple, polished English; crisp and practical.
-- Warm but professional; collaborative.
-- **Never** the word "kindly" (stripped/replaced by a post-filter *and* forbidden
-  in the prompt).
-- Avoid overly formal or escalatory tone unless explicitly requested.
-- Pastes cleanly into Teams, Outlook, OneNote, a PRD, or leadership notes.
-
----
-
-## Mock mode vs local mode
-
-Each provider is selected independently in **Settings**, and all default to
-**Mock**.
-
-| | Mock (default) | Local |
-| --- | --- | --- |
-| **Transcription** | `MockTranscriptionProvider` — deterministic sample transcript. No model. | `SherpaSttProvider` — sherpa-onnx Whisper ONNX model from the app-data models dir. |
-| **Rewrite** | `MockRewriteProvider` — deterministic mode formatting + style rules. No model. | `FoundryLocalRewriteProvider` — Foundry Local + `phi-4-mini-instruct` over an OpenAI-compatible REST API. |
-| **Text-to-speech** | `MockTtsProvider` — a short synthesized beep. No model. | `SherpaTtsProvider` — sherpa-onnx VITS voice (bundled `vits-ljs` or a selected one). |
-
-Mock mode exists so the full UI and workflow can be validated end-to-end with zero
-setup. Switch each provider to its local implementation in **Settings**, and use
-the **Health** tab and the header **capability badge** to confirm the real engine
-is present.
-
----
-
-## The speech engine (sherpa-onnx)
-
-STT and TTS are both served by **sherpa-onnx**, linked through the `sherpa-rs`
-crate behind an **opt-in `sherpa` Cargo feature**:
-
-- **Default / mock build** (`npm run tauri dev`, `cargo check`) links **no** native
-  speech engine — it needs only the Tauri/Rust prerequisites and runs entirely in
-  mock mode. This is what CI and a fresh clone build.
-- **Real-engine build** (`--features sherpa`) pulls in `sherpa-rs` with its
-  `download-binaries` + `tts` features, which **download prebuilt** ONNX Runtime +
-  sherpa-onnx DLLs at build time. **No CMake, no C++ compiler, and no libclang are
-  required from end users** — the prebuilt binaries are linked directly.
-
-Because the engine is behind a feature and a capability check, selecting a local
-provider on a mock-only build never silently fakes success: you get a typed
-`SpeechEngineUnavailable` error and the header badge reads **"Speech engine:
-mock-only."**
-
-Provider APIs used:
-
-- **STT:** `sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer}` with the
-  model's `encoder` / `decoder` / `tokens` files.
-- **TTS:** `sherpa_rs::tts::{VitsTts, VitsTtsConfig}` with the voice's `model` /
-  `tokens` / `lexicon` files. Synthesized audio is played through
-  [`rodio`](https://crates.io/crates/rodio).
-
----
-
-## Models: bundling + optional downloads
-
-Models live under the app-data models dir, split by kind:
-
-```
-%APPDATA%\com.voiceflow.local\models\stt\<id>\...
-%APPDATA%\com.voiceflow.local\models\tts\<id>\...
+```text
+microphone -> CPAL capture -> 16 kHz mono WAV -> sherpa-onnx Whisper
+           -> optional local rewrite -> editable preview -> clipboard
 ```
 
-Built-in registry (`src-tauri/src/models/mod.rs`):
+Speech, transcript, and output are not stored as history. Captured audio uses an
+app-owned temporary directory and is removed after processing or cancellation.
+Settings and installed models persist locally.
 
-| Id | Kind | Bundled | ~Size | Notes |
-| --- | --- | --- | --- | --- |
-| `whisper-tiny-en` | STT | ✅ default | ~100 MB | Fast English STT. Ships for offline first run. |
-| `whisper-base-en` | STT | optional | ~155 MB | More accurate English STT. Download on demand. |
-| `vits-ljs` | TTS | ✅ default | ~115 MB | Natural English neural voice. Ships for offline first run. |
+## Consumer and developer behavior
 
-**Hybrid delivery.** Bundled models make first run work fully offline. Additional
-models are **optional downloads** streamed with progress events and (when a
-checksum is pinned) verified with SHA-256; a mismatch is rejected with a typed
-`ModelChecksumMismatch`. Download from **Settings → Download** (per model), or with
-the `download_model(id)` command. Downloads write to a `.part` file and are renamed
-into place only on success.
+- **Consumer release:** compiled with `sherpa`, defaults to real local STT, and
+  does not expose canned mock transcription. A release build without `sherpa`
+  fails at compile time.
+- **Developer debug:** keeps explicitly labelled mock STT/rewrite/TTS providers
+  for UI development and deterministic tests. Mock STT returns canned text and
+  is never a fallback for a failed real provider.
+- **Rewrite:** Raw mode requires no LLM. Other modes can use deterministic
+  development rewrite or Microsoft Foundry Local. Foundry endpoints are limited
+  to loopback addresses; redirects and environment proxy routing are disabled.
+- **TTS:** remains an optional experiment and is not part of the transcription
+  pipeline or the Chunk 1 installer guarantee.
 
-> **Models and DLLs are never committed to git.** They are fetched into the app-data
-> dir at runtime (via the in-app downloads / `setup-local-models.ps1`) and into
-> `src-tauri/resources/models` at **package time**. `.gitignore` keeps `*.onnx`,
-> `*.bin`, `tokens.txt`, `lexicon.txt`, voice dirs, and `*.dll` out of the repo. The
-> Rust *source* module `src-tauri/src/models/` is code, not data, and stays tracked.
-
----
-
-## Text-to-speech (Speak + auto-speak)
-
-TTS is a **post-preview action** — it is **never** part of `run_pipeline`, so
-processing latency is unaffected and nothing is spoken unless you ask for it.
-
-- **Speak / Stop** button on the preview reads the current (possibly edited) output
-  aloud via the selected TTS provider.
-- **Auto-speak** (Settings, default **off**) speaks the output automatically once
-  processing completes.
-- Commands: `speak(text)`, `stop_speaking`, `list_voices`. The backend emits a
-  `tts-finished` event when playback drains naturally so the UI can reset the Speak
-  button.
-- Typed errors (`TtsVoiceMissing`, `TtsSynthFailed`, `TtsPlaybackFailed`,
-  `SpeechEngineUnavailable`) map to friendly messages. Mock TTS always works (a
-  short beep), so the flow can be validated with no voice installed.
-
----
-
-## Audio guard + live level
-
-The capture path (`src-tauri/src/audio/recorder.rs`) enforces a **minimum duration**
-and a **silence/level threshold** *after* resampling to 16 kHz mono, independent of
-the transcription provider:
-
-- Too short → typed `RecordingTooShort`.
-- Long enough but effectively silent → typed `NoSpeechDetected`.
-
-Both surface as clear banners instead of an empty transcript. A live **input-level**
-value (mic RMS, ~10×/s) is emitted as an `input-level` event and drives the meter in
-the recording indicator. The existing RAII temp-WAV cleanup is unchanged.
-
----
-
-## Architecture
-
-All provider logic lives in Rust behind async traits, so providers can be swapped
-(or cloud ones added later) without touching the UI or pipeline:
-
-- `TranscriptionProvider` → `MockTranscriptionProvider`, `SherpaSttProvider`.
-- `RewriteProvider` → `MockRewriteProvider`, `FoundryLocalRewriteProvider`
-  (Foundry Local CLI bridge + OpenAI-compatible REST on a **dynamic** localhost
-  port, discovered by parsing `foundry service status` — never hardcoded).
-- `TtsProvider` → `MockTtsProvider`, `SherpaTtsProvider` (VITS via sherpa-onnx,
-  played through `rodio`).
-
-Providers are built **per request** from the current settings, so switching in the
-UI takes effect immediately.
-
-```
-src/                     React + TypeScript frontend
-  components/            RecordingIndicator (+ level meter), OutputModePicker,
-                         PreviewPane (editable + Speak/Stop), ErrorBanner,
-                         SettingsPanel (STT/TTS/download/auto-speak), HealthPanel,
-                         PrivacyNote, Toast
-  hooks/                 useRecorder, useHotkeyStatus
-  lib/                   ipc.ts (typed invoke wrappers + event listeners), types.ts
-src-tauri/               Rust backend
-  src/
-    commands.rs          Tauri command handlers (IPC surface)
-    state.rs             Shared app state + per-request provider factories + playback
-    settings.rs          Settings persistence + provider selection (mock-first)
-    health.rs            Typed health + capability checks (mic, temp, STT, TTS,
-                         audio output, foundry)
-    errors.rs            VfError enum → friendly UI messages
-    pipeline.rs          transcribe → rewrite → style filter (TTS is NOT in here)
-    models/              Model registry, presence, checksum, progress downloads
-    audio/               recorder.rs (cpal + guard + level), wav.rs (hound),
-                         temp.rs (RAII cleanup)
-    transcription/       mod.rs (trait), mock.rs, sherpa.rs
-    rewrite/             mod.rs (trait + OutputMode), mock.rs, foundry_local.rs, style.rs
-    tts/                 mod.rs (trait), mock.rs, sherpa.rs, playback.rs (rodio)
-scripts/                 setup-local-models.ps1, check-local-models.ps1,
-                         check-native-build-prereqs.ps1, smoke-test-foundry.ps1
-```
-
----
-
-## Quick start (mock mode — zero setup)
+## Run and build
 
 ```powershell
-npm install
-npm run tauri dev
+npm ci
+
+# Developer build; explicit mocks are available.
+npm run tauri:dev
+
+# Developer build with the real speech engine.
+npm run tauri:dev:sherpa
+
+# Consumer x64 installers. This stages and verifies the pinned default STT
+# model, compiles Sherpa, and creates NSIS/MSI packages.
+npm run tauri:build
 ```
 
-That's it. All providers default to Mock and the `sherpa` feature is **off by
-default**, so a fresh checkout builds and runs the full record → process → edit →
-copy → speak loop with **no CMake, libclang, or models** — just the Tauri/Rust
-prerequisites. Enable the real speech engine with `--features sherpa` (see below).
+The consumer build downloads about **99 MiB** of model data at package time.
+The resulting installer is correspondingly larger, plus the application,
+sherpa-onnx, and ONNX Runtime assets. The validated unsigned x64 outputs were
+about **53.5 MiB (NSIS)** and **67.1 MiB (MSI)**; exact sizes can vary with
+toolchain and signing. The packaging machine needs the normal Tauri Windows
+prerequisites and a same-architecture `libclang.dll` because `sherpa-rs-sys
+0.6.8` generates bindings during its build. Installed consumer machines do not
+need Rust, Node, Visual Studio, CMake, or libclang.
 
-To type-check / build just the frontend:
+## Speech models and integrity
+
+Runtime models live under:
+
+```text
+%APPDATA%\com.voiceflow.local\models\stt\<id>\
+%APPDATA%\com.voiceflow.local\models\tts\<id>\
+```
+
+| ID | Purpose | Consumer bundle | Immutable upstream revision | Approx. size |
+|---|---|---:|---|---:|
+| `whisper-tiny-en` | English STT | Yes | `d026532c022fa99fd789d6b32446a1df7b6bfc43` | 99 MiB |
+| `whisper-base-en` | More accurate English STT | No | `59eea950fc76df2453efb57e6c0fd334548e8ffe` | 153 MiB |
+| `vits-ljs` | Optional English TTS | No | `7ac337c834f318e45a34037cb3371cc3929187ff` | 113 MiB |
+
+Every file has a required SHA-256 in `src-tauri/src/models/mod.rs`. Existing
+files, downloads, package-staged resources, first-run copies, and provider
+activation are verified. Downloads use `.part` files and never activate an
+incomplete or mismatched artifact.
+
+`scripts/prepare-release-models.ps1` stages only the default STT model under
+`src-tauri/resources/models`. `build.rs` repeats the hash checks for release
+builds, and the release-only `src-tauri/tauri.release.conf.json` packages that
+resource directory plus the x64 Sherpa/ONNX runtime DLLs copied by
+`sherpa-rs-sys`. On first consumer launch, the app verifies the bundled files
+again before copying them into app data. `bundled: true` therefore means an
+artifact participates in this concrete packaging path; it is not merely a
+registry label.
+
+For local development model installation:
 
 ```powershell
-npm run build
+.\scripts\setup-local-models.ps1
+.\scripts\check-local-models.ps1
+
+# Optional TTS voice:
+.\scripts\setup-local-models.ps1 -TtsVoice vits-ljs
 ```
 
----
+## Audio and error behavior
 
-## Setup for real local speech
+CPAL captures the default input device in its native format. Interleaved input
+is downmixed to mono, normalized to `f32`, linearly resampled to 16 kHz, checked
+for minimum duration and silence, converted to 16-bit PCM, and written to a
+temporary WAV for the current sherpa-rs file-oriented provider.
 
-### 1. Prerequisites
+Temporary WAVs are restricted to:
 
-- **Rust** (stable) — <https://rustup.rs>
-- **Node.js 18+** and npm — <https://nodejs.org>
-- **Tauri v2 system prerequisites** for Windows —
-  <https://tauri.app/start/prerequisites/>:
-  - **Microsoft Visual Studio C++ Build Tools** (the "Desktop development with
-    C++" workload) for the MSVC linker used to build the Rust app itself.
-  - **WebView2** runtime (preinstalled on Windows 11; installable on Windows 10).
-
-> **No speech toolchain needed.** Unlike v1, the real speech engine does **not**
-> require CMake or libclang: `--features sherpa` downloads **prebuilt** ONNX
-> Runtime + sherpa-onnx DLLs. You only need the standard MSVC linker that any Rust
-> Windows build uses.
-
-### 2. Build with the real engine (optional)
-
-```powershell
-npm run tauri:dev:sherpa      # dev
-npm run tauri:build:sherpa    # release + installers
+```text
+%TEMP%\voiceflow-local\audio\<uuid>.wav
 ```
 
-The first `--features sherpa` build downloads the prebuilt speech-engine DLLs
-(cached afterwards).
+Startup and the Settings cleanup action remove only UUID-named WAVs in that
+directory. Unrelated temp files are never scanned or deleted. Explicit cleanup
+failures are returned to the UI; startup and health diagnostics report stale
+cleanup failures.
 
-### 3. Get the speech models
+Typed UI errors cover microphone absence/permission, unsupported or failed
+audio streams, short/silent input, temp creation/cleanup, missing/corrupt
+models, unavailable engine builds, model load, inference, downloads, Foundry
+availability, and rewrite failures. Real-provider failures never return canned
+transcripts.
 
-Easiest: run the app and use **Settings → Download** for the STT model and TTS
-voice you want (live progress, checksum-verified). Or script it:
+## Foundry Local boundary
 
-```powershell
-# Downloads the tiny STT model + default TTS voice into the app-data dir,
-# and (optionally) prepares Foundry + Phi for rewrite.
-./scripts/setup-local-models.ps1
+Foundry Local is optional and used only after STT for non-Raw output modes.
 
-# Validate readiness and print PASS/FAIL (mirrors the in-app Health tab):
-./scripts/check-local-models.ps1
-```
-
-Neither script commits models or secrets.
-
-### 4. Install Microsoft Foundry Local (rewrite — optional)
+- Auto-discovered and manual endpoints must resolve syntactically to
+  `localhost`, `127.0.0.0/8`, or `::1`.
+- Only HTTP(S) is accepted; credentials in URLs are rejected.
+- The HTTP client disables redirects and proxy routing.
+- CLI exit status is checked. Service/model failures are not treated as
+  successful output.
+- Runtime processing does not automatically download a Foundry model. Install
+  it explicitly:
 
 ```powershell
 winget install Microsoft.FoundryLocal
@@ -315,156 +134,91 @@ foundry model download phi-4-mini-instruct
 foundry model load phi-4-mini-instruct
 ```
 
-Foundry Local serves an OpenAI-compatible API on a dynamically-assigned localhost
-port. VoiceFlow discovers it by parsing `foundry service status`, so you never
-configure a port. (A manual endpoint override is available in Settings for
-debugging.) Without Foundry, non-Raw modes fall back to the mock rewriter.
+Remaining network behavior: model installation and release-model staging use
+HTTPS against immutable Hugging Face revisions. Normal STT inference and Raw
+output processing require no network, account, API key, or cloud inference.
 
-### 5. Switch to local providers
+## Health diagnostics
 
-Open **Settings** and set:
+The Health panel independently reports:
 
-- **Transcription provider** → *Sherpa (local)* and pick an **STT model**.
-- **TTS provider** → *Sherpa (local)* and pick a **voice**; toggle **auto-speak**
-  if you want.
-- **Rewrite provider** → *Foundry Local* (optional).
+- app-owned temp storage and stale cleanup;
+- default microphone availability;
+- whether sherpa-onnx is compiled in;
+- selected STT file presence;
+- selected STT SHA-256 verification;
+- successful STT recognizer/model initialization;
+- TTS output/voice/synthesis readiness when selected;
+- Foundry CLI, service, endpoint, model, and completion readiness when selected.
 
-Save, then open the **Health** tab and run the checks. The header badge should show
-the active providers plus **"Speech engine: real."**
+A debug mock result does not make real STT healthy.
 
----
-
-## Health checks + capability badge
-
-The **Health** tab (and `run_health_checks` command) reports typed pass/fail for:
-
-- Temp audio folder writable
-- Microphone available
-- **STT model present & loads** (in `sherpa`-enabled builds; a tiny recognition
-  smoke test)
-- **TTS voice present & synthesizes** a tiny sample
-- **Audio output device available**
-- Foundry Local installed / service running / dynamic port discovered / Phi model
-  available / chat-completion smoke test
-
-Checks that don't apply to your current settings are reported as **skipped**. The
-header **capability badge** independently shows whether the running build even
-contains the real speech engine, so an unavailable provider is surfaced up front
-rather than failing silently at runtime.
-
----
-
-## Privacy model
-
-- **All local.** Transcription, rewriting, and speech synthesis run entirely on
-  your machine.
-- **No cloud, no API keys.**
-- **No database, no history.** Transcripts and synthesized audio live in memory
-  only and are never persisted. Only your preferences are stored (in
-  `settings.json`).
-- **Temporary audio is deleted** after processing — on success *and* on error
-  paths — via an RAII guard (`Drop`) plus explicit cleanup. The WAV lives only in
-  the OS temp dir as `voiceflow-<uuid>.wav` for the duration of processing.
-  Settings → **Clear temp files** removes any stragglers.
-- **No telemetry.**
-- **No auto-send.** Text reaches the clipboard only when you click **Copy** (or when
-  you explicitly enable auto-copy, which is **off** by default). Nothing is spoken
-  unless you click **Speak** or explicitly enable **auto-speak** (also **off** by
-  default).
-- **Enterprise note:** for confidential or regulated work, only use approved
-  enterprise endpoints and follow your organization's data-handling policies. The
-  app shows this reminder in-product too.
-
----
-
-## System requirements
-
-- **Windows 10 or 11** (Windows-first; the code is portable but only tested on
-  Windows).
-- A working **microphone** (and microphone permission), plus an **audio output
-  device** for TTS playback.
-- Enough **disk and RAM** for local models (only when using local providers):
-  - STT `whisper-tiny-en` ≈ 100 MB, `whisper-base-en` ≈ 155 MB on disk.
-  - TTS `vits-ljs` ≈ 115 MB on disk.
-  - `phi-4-mini-instruct` via Foundry Local needs several GB of RAM/VRAM depending
-    on the runtime.
-- MSVC Build Tools to build the Rust app. **No CMake/libclang** needed for the
-  speech engine (prebuilt DLLs).
-
----
-
-## Packaging (shipping the DLLs + bundled models)
-
-To ship a self-contained installer that works offline on first run:
-
-1. **Build with the engine:** `npm run tauri:build:sherpa`. The first build
-   downloads the prebuilt ONNX Runtime + sherpa-onnx DLLs; make sure they are
-   included as resources / next to the executable so the app can load them at
-   runtime.
-2. **Stage the bundled models** into `src-tauri/resources/models/{stt,tts}/<id>/`
-   at package time (e.g. by running `./scripts/setup-local-models.ps1` pointed at
-   that dir, or a build step). The app copies/uses them on first run. **Do not
-   commit them** — they are git-ignored and fetched at package time.
-3. `tauri build --features sherpa` produces **NSIS** and **MSI** installers
-   (configured in `src-tauri/tauri.conf.json`). WebView2 is delivered via the
-   `downloadBootstrapper` install mode.
+## Tests and real inference smoke
 
 ```powershell
-npm run tauri:build:sherpa
-# Installers:
-#   src-tauri/target/release/bundle/nsis/*.exe
-#   src-tauri/target/release/bundle/msi/*.msi
+npm run build
+cargo test --manifest-path src-tauri\Cargo.toml
+cargo test --manifest-path src-tauri\Cargo.toml --features sherpa
+.\scripts\smoke-test-stt.ps1
 ```
 
-> Run installer generation on a native **x64 Windows** host. Code signing is not
-> configured (unsigned installers trigger SmartScreen). The bundled icons are
-> placeholders — replace `src-tauri/icons/*` before a public release.
+The known-WAV smoke test uses upstream `test_wavs/0.wav` from the same immutable
+Whisper tiny revision and asserts that real inference contains the expected
+phrases “early nightfall” and “yellow lamps.” Unit tests and mock tests cannot
+prove physical microphone capture, acoustic quality, device permissions, or
+installer behavior on a separate clean machine.
 
----
+## Clean Windows offline acceptance test
 
-## Licensing & attribution
+1. On the build machine, check out the release commit and run
+   `npm ci`, then `npm run tauri:build`.
+2. Confirm the staging command prints `Verified` for all three tiny.en files.
+3. Inspect
+   `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\` and
+   `...\msi\`; retain the generated installer and its SHA-256.
+4. Use a clean Windows 10/11 x64 machine with no Rust, Node, Visual Studio, or
+   model files. Keep it online only for installation if the WebView2
+   bootstrapper is needed.
+5. Install VoiceFlow Local. Grant microphone permission in Windows Settings if
+   prompted.
+6. Launch the app. Confirm the header says **Speech engine: real**, Settings
+   selects **Local speech engine (sherpa-onnx)**, and the tiny model shows
+   **verified**.
+7. Open Health and verify microphone, speech engine, model presence, model hash,
+   and model-load checks pass. Foundry and TTS may be skipped for Raw STT.
+8. Select **Raw transcript**, select the intended Windows default microphone,
+   hold `Ctrl+Shift+Space`, speak a unique English sentence, and press the
+   shortcut again.
+9. Confirm the preview contains the spoken sentence rather than the developer
+   mock text (“This is a mock transcript…”). Copy it and paste into Notepad.
+10. Exit the app, disconnect Ethernet/Wi-Fi, relaunch, repeat steps 7–9 with a
+    different sentence, and confirm successful transcription.
+11. Confirm `%TEMP%\voiceflow-local\audio` has no completed-recording WAV and no
+    transcript/history file exists in app data.
+12. Corruption check: reconnect, close the app, alter one byte in a tiny model
+    file under `%APPDATA%\com.voiceflow.local\models\stt\whisper-tiny-en`, then
+    relaunch. Confirm health reports a hash failure and recording does not
+    produce canned text. Reinstall or delete the corrupt model and use the
+    verified package copy/download to repair it.
 
-- **sherpa-onnx** and **sherpa-rs** are Apache-2.0 licensed
-  (<https://github.com/k2-fsa/sherpa-onnx>,
-  <https://github.com/thewh1teagle/sherpa-rs>). The prebuilt ONNX Runtime is MIT
-  licensed. Include their license notices when redistributing the DLLs.
-- **STT models** (`sherpa-onnx-whisper-*`) are derived from OpenAI Whisper (MIT).
-- **TTS voice** `vits-ljs` is trained on the **LJ Speech** dataset (public domain).
-  Confirm the license/attribution of any additional voice you bundle before
-  shipping it.
-- Model files are hosted on Hugging Face by
-  [csukuangfj](https://huggingface.co/csukuangfj); see each model card for details.
+Physical microphone and clean-machine offline acceptance must be performed by a
+human on the generated Windows installer; repository builds and known-WAV tests
+are not substitutes.
 
-Keep these notices with any distributed build that includes the engine or models.
+For the complete nondeveloper procedure, artifact hash commands, safe corruption
+test, and required report format, use
+[`docs/windows-chunk1-acceptance.md`](docs/windows-chunk1-acceptance.md).
 
----
+## Licensing
 
-## Development notes
+`THIRD_PARTY_NOTICES.md` is packaged with consumer builds. sherpa-onnx and
+sherpa-rs are Apache-2.0; ONNX Runtime is MIT; the bundled Whisper artifact is
+derived from OpenAI Whisper (MIT) and pinned to the source revision shown above.
+Review and preserve upstream notices before public redistribution.
 
-- Rust unit tests cover the mock STT/TTS/rewrite providers, the style post-filter,
-  the model-manager checksum verification, the audio-guard helper, the Foundry
-  endpoint parser, error mapping (including the new TTS/download errors), and that
-  selecting a local provider on a mock-only build returns
-  `SpeechEngineUnavailable`. Mock is the default build, so `cargo test` runs them
-  with **no native toolchain**. Add `--features sherpa` to also compile the
-  sherpa-backed providers.
-- The frontend is type-checked by `tsc` as part of `npm run build`.
-- Building the app in mock mode (`npm run tauri:dev` / `tauri build`) needs only the
-  Tauri/Rust prerequisites; the speech engine's DLLs are fetched only for the opt-in
-  `sherpa` feature.
+## Chunk 1 boundaries
 
----
-
-## Limitations
-
-- **No transcript history** and no database.
-- **No cloud providers** — local only (the provider traits make adding them later
-  straightforward).
-- **No auto-send** — copy-to-clipboard only (auto-copy is opt-in). Auto-speak is
-  opt-in too.
-- **No always-on listening** — records only on explicit start, always with a visible
-  indicator.
-- **English** bundled STT model and TTS voice by default; other languages require
-  downloading matching models.
-- **Rewrite** for non-Raw modes needs Foundry Local + `phi-4-mini-instruct`; mock
-  rewrite works with no setup.
+This repository intentionally does not add tray behavior, target-application
+insertion, floating overlays, personalization, strict-offline UI controls, or
+cross-platform product work. The current interaction remains record, optional
+rewrite, preview, and copy.

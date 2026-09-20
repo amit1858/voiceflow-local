@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -56,8 +57,9 @@ sherpa-rs = { version = "0.6.8", optional = true }
 # end-to-end (mock STT + mock TTS + mock/Foundry rewrite).
 default = []
 # Enables the real Sherpa STT + TTS providers backed by prebuilt sherpa-onnx
-# binaries (no CMake/C++). The release build ships with this enabled so real
-# speech works out of the box for end users. See README "Build & packaging".
+# binaries (no CMake/C++ compilation). sherpa-rs-sys 0.6.8 still runs bindgen,
+# so the packaging machine needs a same-architecture libclang; installed end
+# users do not. Consumer release builds enable this feature.
 sherpa = ["dep:sherpa-rs"]
 
 [profile.release]

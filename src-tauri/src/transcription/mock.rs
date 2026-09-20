@@ -53,7 +53,10 @@ mod tests {
     #[tokio::test]
     async fn errors_when_audio_missing() {
         let p = MockTranscriptionProvider::new();
-        let err = p.transcribe(Path::new("does-not-exist.wav")).await.unwrap_err();
+        let err = p
+            .transcribe(Path::new("does-not-exist.wav"))
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "InvalidAudioFile");
     }
 
