@@ -1,0 +1,171 @@
+name: Windows Chunk 1 validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full commit SHA to build (defaults to the selected ref SHA)
+        required: false
+        type: string
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-chunk1-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-validation-installers:
+    name: Build unsigned Windows x64 validation installers
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      TARGET_TRIPLE: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Record and verify source identity
+        id: source
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha || github.event.pull_request.head.sha || github.sha }}
+          SOURCE_REF: ${{ github.event.pull_request.head.ref || github.ref }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:EXPECTED_SHA.Trim().ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Checked out $actual but workflow requested $expected."
+          }
+          $short = $actual.Substring(0, 12)
+          "sha=$actual" >> $env:GITHUB_OUTPUT
+          "short-sha=$short" >> $env:GITHUB_OUTPUT
+          "source-ref=$env:SOURCE_REF" >> $env:GITHUB_OUTPUT
+          "VOICEFLOW_BUILD_SHA=$actual" >> $env:GITHUB_ENV
+          "VOICEFLOW_BUILD_REF=$env:SOURCE_REF" >> $env:GITHUB_ENV
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20.18.1
+          cache: npm
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --target $env:TARGET_TRIPLE
+          rustup default 1.96.0
+          rustc --version --verbose
+          cargo --version
+
+      - name: Activate x64 MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+
+      - name: Configure Windows native prerequisites and x64 libclang
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "Visual Studio Installer was not found on the Windows runner."
+          }
+          $vs = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vs) {
+            throw "The MSVC x64 build tools required by Tauri are not installed."
+          }
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            throw "The activated Visual Studio environment does not expose the x64 C++ compiler."
+          }
+
+          $libclang = Join-Path $env:ProgramFiles "LLVM\bin\libclang.dll"
+          if (-not (Test-Path $libclang)) {
+            throw "The pinned windows-2022 runner image does not contain x64 libclang at $libclang."
+          }
+
+          $stream = [System.IO.File]::OpenRead($libclang)
+          try {
+            $reader = [System.IO.BinaryReader]::new($stream)
+            $stream.Position = 0x3c
+            $peOffset = $reader.ReadInt32()
+            $stream.Position = $peOffset + 4
+            $machine = $reader.ReadUInt16()
+          } finally {
+            $stream.Dispose()
+          }
+          if ($machine -ne 0x8664) {
+            throw ("libclang must be x64 (PE machine 0x8664); found 0x{0:x4}." -f $machine)
+          }
+
+          $libclangDir = Split-Path -Parent $libclang
+          "LIBCLANG_PATH=$libclangDir" >> $env:GITHUB_ENV
+          Write-Host "Using x64 libclang: $libclang"
+          Write-Host "Using Visual Studio: $vs"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-native-build-prereqs.ps1
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run default Rust tests
+        run: cargo test --locked --manifest-path src-tauri\Cargo.toml
+
+      - name: Stage and verify pinned Whisper model
+        shell: pwsh
+        run: |
+          npm run prepare:release-models
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File scripts\check-local-models.ps1 `
+            -ModelsRoot src-tauri\resources\models `
+            -SttModel whisper-tiny-en
+
+      - name: Run Sherpa-enabled Rust tests
+        run: cargo test --locked --manifest-path src-tauri\Cargo.toml --features sherpa
+
+      - name: Run real Sherpa known-WAV inference
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-test-stt.ps1
+
+      - name: Build unsigned consumer NSIS and MSI installers
+        run: npm run tauri:build
+
+      - name: Create provenance manifest and validation package
+        id: package
+        shell: pwsh
+        env:
+          BUILD_SHA: ${{ steps.source.outputs.sha }}
+          BUILD_REF: ${{ steps.source.outputs.source-ref }}
+          SHORT_SHA: ${{ steps.source.outputs.short-sha }}
+        run: |
+          $artifactName = "voiceflow-local-windows-x64-validation-$env:SHORT_SHA"
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File scripts\new-windows-validation-package.ps1 `
+            -OutputDirectory "artifacts\$artifactName" `
+            -Repository $env:GITHUB_REPOSITORY `
+            -Ref $env:BUILD_REF `
+            -CommitSha $env:BUILD_SHA
+          "artifact-name=$artifactName" >> $env:GITHUB_OUTPUT
+          "artifact-path=artifacts\$artifactName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned validation installers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.package.outputs.artifact-name }}
+          path: ${{ steps.package.outputs.artifact-path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
