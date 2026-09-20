@@ -111,6 +111,12 @@ jobs:
 
           $libclangDir = Split-Path -Parent $libclang
           "LIBCLANG_PATH=$libclangDir" >> $env:GITHUB_ENV
+          $modulePath = @(
+            (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\Modules"),
+            (Join-Path $env:ProgramFiles "PowerShell\7\Modules"),
+            $env:PSModulePath
+          ) -join ";"
+          "PSModulePath=$modulePath" >> $env:GITHUB_ENV
           Write-Host "Using x64 libclang: $libclang"
           Write-Host "Using Visual Studio: $vs"
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-native-build-prereqs.ps1
