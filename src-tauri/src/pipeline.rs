@@ -54,5 +54,9 @@ pub async fn run_pipeline(
         style.apply(&rewritten)
     };
 
-    Ok(PipelineResult { raw_transcript: raw_styled, output, mode })
+    Ok(PipelineResult {
+        raw_transcript: raw_styled,
+        output,
+        mode,
+    })
 }

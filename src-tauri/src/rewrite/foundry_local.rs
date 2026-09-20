@@ -15,6 +15,7 @@
 //! Every failure maps to a specific [`VfError`] so the UI can guide the user.
 
 use std::io::ErrorKind;
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -43,6 +44,8 @@ impl FoundryLocalRewriteProvider {
             endpoint_override,
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             endpoint: Mutex::new(None),
@@ -59,7 +62,7 @@ impl FoundryLocalRewriteProvider {
     pub async fn ensure_ready(&self) -> Result<String, VfError> {
         if let Some(ep) = &self.endpoint_override {
             if !ep.trim().is_empty() {
-                return Ok(ep.trim().trim_end_matches('/').to_string());
+                return validate_local_endpoint(ep);
             }
         }
 
@@ -68,7 +71,11 @@ impl FoundryLocalRewriteProvider {
         }
 
         // Try an already-running service first.
-        let mut endpoint = self.discover_endpoint().await?;
+        let mut endpoint = match self.discover_endpoint().await {
+            Ok(endpoint) => endpoint,
+            Err(VfError::FoundryServiceNotRunning { .. }) => None,
+            Err(error) => return Err(error),
+        };
 
         // If not running, start it and retry discovery.
         if endpoint.is_none() {
@@ -80,9 +87,14 @@ impl FoundryLocalRewriteProvider {
             detail: "no http(s) endpoint found in `foundry service status` output".into(),
         })?;
 
-        // Best-effort ensure the model is present and loaded (idempotent).
-        let _ = self.run_foundry(&["model", "download", &self.model]).await;
-        let _ = self.run_foundry(&["model", "load", &self.model]).await;
+        // Runtime inference never downloads a model. The user must explicitly
+        // install it; loading is local and its exit status is checked.
+        if !self.model_available().await? {
+            return Err(VfError::PhiNotInstalled {
+                model: self.model.clone(),
+            });
+        }
+        self.run_foundry(&["model", "load", &self.model]).await?;
 
         if let Ok(mut guard) = self.endpoint.lock() {
             *guard = Some(endpoint.clone());
@@ -93,7 +105,9 @@ impl FoundryLocalRewriteProvider {
     /// Run `foundry service status` and parse out the REST endpoint URL.
     pub async fn discover_endpoint(&self) -> Result<Option<String>, VfError> {
         let output = self.run_foundry(&["service", "status"]).await?;
-        Ok(parse_endpoint(&output))
+        parse_endpoint(&output)
+            .map(|endpoint| validate_local_endpoint(&endpoint))
+            .transpose()
     }
 
     /// Verify the `foundry` CLI is installed by running `foundry --version`.
@@ -146,7 +160,19 @@ impl FoundryLocalRewriteProvider {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                Ok(format!("{stdout}\n{stderr}"))
+                let combined = format!("{stdout}\n{stderr}");
+                if out.status.success() {
+                    Ok(combined)
+                } else {
+                    Err(VfError::FoundryServiceNotRunning {
+                        detail: format!(
+                            "`foundry {}` exited with {}: {}",
+                            args.join(" "),
+                            out.status,
+                            combined.trim()
+                        ),
+                    })
+                }
             }
             Err(e) if e.kind() == ErrorKind::NotFound => Err(VfError::FoundryNotInstalled),
             Err(e) => Err(VfError::FoundryServiceNotRunning {
@@ -158,8 +184,14 @@ impl FoundryLocalRewriteProvider {
     fn build_messages(&self, text: &str, mode: OutputMode, style: &StyleRules) -> Vec<ChatMessage> {
         let system = format!("{}\n\nTask: {}", style.system_prompt(), mode.instruction());
         vec![
-            ChatMessage { role: "system".into(), content: system },
-            ChatMessage { role: "user".into(), content: format!("Transcript:\n\n{text}") },
+            ChatMessage {
+                role: "system".into(),
+                content: system,
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: format!("Transcript:\n\n{text}"),
+            },
         ]
     }
 }
@@ -195,7 +227,9 @@ impl RewriteProvider for FoundryLocalRewriteProvider {
             let detail = resp.text().await.unwrap_or_default();
             // A 404 for the model usually means it isn't loaded.
             if status.as_u16() == 404 && detail.to_lowercase().contains("model") {
-                return Err(VfError::PhiNotInstalled { model: self.model.clone() });
+                return Err(VfError::PhiNotInstalled {
+                    model: self.model.clone(),
+                });
             }
             return Err(VfError::RewriteFailed {
                 detail: format!("Foundry returned {status}: {detail}"),
@@ -226,13 +260,17 @@ impl RewriteProvider for FoundryLocalRewriteProvider {
 /// Map a reqwest error to the most specific [`VfError`].
 fn map_reqwest_error(url: &str, e: reqwest::Error) -> VfError {
     if e.is_timeout() {
-        VfError::FoundryTimeout { detail: format!("request to {url} timed out") }
+        VfError::FoundryTimeout {
+            detail: format!("request to {url} timed out"),
+        }
     } else if e.is_connect() {
         VfError::FoundryNoResponse {
             detail: format!("could not connect to {url}: {e}"),
         }
     } else {
-        VfError::RewriteFailed { detail: format!("request to {url} failed: {e}") }
+        VfError::RewriteFailed {
+            detail: format!("request to {url} failed: {e}"),
+        }
     }
 }
 
@@ -251,12 +289,61 @@ fn parse_endpoint(text: &str) -> Option<String> {
             if let Some(idx) = url[scheme.len()..].find('/') {
                 url.truncate(scheme.len() + idx);
             }
+
             if url.len() > scheme.len() {
                 return Some(url);
             }
         }
     }
     None
+}
+
+fn validate_local_endpoint(endpoint: &str) -> Result<String, VfError> {
+    let parsed =
+        reqwest::Url::parse(endpoint.trim()).map_err(|e| VfError::FoundryEndpointRejected {
+            detail: format!("invalid endpoint `{endpoint}`: {e}"),
+        })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(VfError::FoundryEndpointRejected {
+            detail: "Foundry endpoint must use http or https.".to_string(),
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(VfError::FoundryEndpointRejected {
+            detail: "Foundry endpoint must not contain credentials.".to_string(),
+        });
+    }
+    let local = match parsed.host_str() {
+        Some(host) if host.eq_ignore_ascii_case("localhost") => true,
+        Some(host) => host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false),
+        None => false,
+    };
+    if !local {
+        return Err(VfError::FoundryEndpointRejected {
+            detail: format!(
+                "Foundry Local may only use a loopback endpoint; `{endpoint}` is not local."
+            ),
+        });
+    }
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| VfError::FoundryEndpointRejected {
+            detail: "Foundry endpoint must include a valid port.".to_string(),
+        })?;
+    let raw_host = parsed
+        .host_str()
+        .ok_or_else(|| VfError::FoundryEndpointRejected {
+            detail: "Foundry endpoint has no host.".to_string(),
+        })?;
+    let host = if raw_host.contains(':') {
+        format!("[{raw_host}]")
+    } else {
+        raw_host.to_string()
+    };
+    Ok(format!("{}://{}:{}", parsed.scheme(), host, port))
 }
 
 // ---- OpenAI-compatible wire types -----------------------------------------
@@ -288,14 +375,17 @@ struct ChatChoice {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_endpoint;
     use super::FoundryLocalRewriteProvider;
+    use super::{parse_endpoint, validate_local_endpoint};
     use crate::rewrite::{OutputMode, StyleRules};
 
     #[test]
     fn parses_dynamic_port_endpoint() {
         let sample = "Model management service is running on http://127.0.0.1:5273/openai/status";
-        assert_eq!(parse_endpoint(sample), Some("http://127.0.0.1:5273".to_string()));
+        assert_eq!(
+            parse_endpoint(sample),
+            Some("http://127.0.0.1:5273".to_string())
+        );
     }
 
     #[test]
@@ -304,9 +394,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_loopback_foundry_endpoints() {
+        assert_eq!(
+            validate_local_endpoint("http://127.0.0.1:5273/v1").unwrap(),
+            "http://127.0.0.1:5273"
+        );
+        assert_eq!(
+            validate_local_endpoint("http://localhost:5273").unwrap(),
+            "http://localhost:5273"
+        );
+        assert_eq!(
+            validate_local_endpoint("http://[::1]:5273").unwrap(),
+            "http://[::1]:5273"
+        );
+        for remote in [
+            "https://example.com:443",
+            "http://192.168.1.20:5273",
+            "ftp://127.0.0.1:5273",
+        ] {
+            let error = validate_local_endpoint(remote).unwrap_err();
+            assert_eq!(error.code(), "FoundryEndpointRejected");
+        }
+    }
+
+    #[test]
     fn build_messages_injects_style_and_mode_instruction() {
-        let provider =
-            FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
+        let provider = FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
         let style = StyleRules::default();
         let msgs = provider.build_messages("we should ship friday", OutputMode::Teams, &style);
 
@@ -325,8 +438,7 @@ mod tests {
 
     #[test]
     fn each_mode_builds_a_distinct_instruction() {
-        let provider =
-            FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
+        let provider = FoundryLocalRewriteProvider::new("phi-4-mini-instruct".into(), None);
         let style = StyleRules::default();
         let email = provider.build_messages("x", OutputMode::Email, &style)[0]
             .content

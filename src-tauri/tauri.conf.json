@@ -32,6 +32,10 @@
     "category": "Productivity",
     "shortDescription": "Local-first voice-to-clipboard assistant",
     "longDescription": "VoiceFlow Local turns speech into polished, paste-ready text entirely on your machine — global hotkey to record, local transcription and rewrite, then copy. No cloud, no history, no telemetry.",
+    "resources": [
+      "resources",
+      "../THIRD_PARTY_NOTICES.md"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

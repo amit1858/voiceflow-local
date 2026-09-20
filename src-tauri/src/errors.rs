@@ -30,6 +30,9 @@ pub enum VfError {
     #[error("The captured audio file is missing or invalid")]
     InvalidAudioFile { detail: String },
 
+    #[error("Could not create temporary audio storage")]
+    TempAudioFailed { detail: String },
+
     #[error("Failed to clean up temporary audio files")]
     TempCleanupFailed { detail: String },
 
@@ -45,6 +48,9 @@ pub enum VfError {
     #[error("The local speech engine is not available in this build")]
     #[allow(dead_code)]
     SpeechEngineUnavailable { detail: String },
+
+    #[error("Mock transcription is only available in development builds")]
+    MockTranscriptionDisabled,
 
     #[error("The local speech model file is missing")]
     ModelMissing { expected_path: String, hint: String },
@@ -93,6 +99,9 @@ pub enum VfError {
     #[error("Could not discover the Foundry Local endpoint port")]
     FoundryPortNotDiscovered { detail: String },
 
+    #[error("The Foundry endpoint is not an allowed local address")]
+    FoundryEndpointRejected { detail: String },
+
     #[error("The Phi model is not installed in Foundry Local")]
     PhiNotInstalled { model: String },
 
@@ -129,10 +138,12 @@ impl VfError {
             VfError::AudioStopFailed { .. } => "AudioStopFailed",
             VfError::AudioCaptureFailed { .. } => "AudioCaptureFailed",
             VfError::InvalidAudioFile { .. } => "InvalidAudioFile",
+            VfError::TempAudioFailed { .. } => "TempAudioFailed",
             VfError::TempCleanupFailed { .. } => "TempCleanupFailed",
             VfError::RecordingTooShort { .. } => "RecordingTooShort",
             VfError::NoSpeechDetected { .. } => "NoSpeechDetected",
             VfError::SpeechEngineUnavailable { .. } => "SpeechEngineUnavailable",
+            VfError::MockTranscriptionDisabled => "MockTranscriptionDisabled",
             VfError::ModelMissing { .. } => "ModelMissing",
             VfError::ModelInvalid { .. } => "ModelInvalid",
             VfError::ModelLoadFailed { .. } => "ModelLoadFailed",
@@ -147,6 +158,7 @@ impl VfError {
             VfError::FoundryNotInstalled => "FoundryNotInstalled",
             VfError::FoundryServiceNotRunning { .. } => "FoundryServiceNotRunning",
             VfError::FoundryPortNotDiscovered { .. } => "FoundryPortNotDiscovered",
+            VfError::FoundryEndpointRejected { .. } => "FoundryEndpointRejected",
             VfError::PhiNotInstalled { .. } => "PhiNotInstalled",
             VfError::FoundryNoResponse { .. } => "FoundryNoResponse",
             VfError::FoundryTimeout { .. } => "FoundryTimeout",
@@ -161,12 +173,14 @@ impl VfError {
     /// Optional remediation hint carried to the UI.
     pub fn hint(&self) -> Option<String> {
         match self {
-            VfError::ModelMissing { expected_path, hint } => {
-                Some(format!("Expected model at: {expected_path}\n{hint}"))
-            }
-            VfError::TtsVoiceMissing { expected_path, hint } => {
-                Some(format!("Expected voice at: {expected_path}\n{hint}"))
-            }
+            VfError::ModelMissing {
+                expected_path,
+                hint,
+            } => Some(format!("Expected model at: {expected_path}\n{hint}")),
+            VfError::TtsVoiceMissing {
+                expected_path,
+                hint,
+            } => Some(format!("Expected voice at: {expected_path}\n{hint}")),
             VfError::SpeechEngineUnavailable { .. } => Some(
                 "This build was compiled without the local speech engine. Use the \
 speech-enabled release build (which ships the prebuilt sherpa-onnx binaries), or build from \
@@ -205,6 +219,7 @@ or set a manual endpoint override in Settings."
             | VfError::AudioStopFailed { detail }
             | VfError::AudioCaptureFailed { detail }
             | VfError::InvalidAudioFile { detail }
+            | VfError::TempAudioFailed { detail }
             | VfError::TempCleanupFailed { detail }
             | VfError::RecordingTooShort { detail }
             | VfError::NoSpeechDetected { detail }
@@ -213,6 +228,7 @@ or set a manual endpoint override in Settings."
             | VfError::TtsSynthFailed { detail }
             | VfError::TtsPlaybackFailed { detail }
             | VfError::FoundryNoResponse { detail }
+            | VfError::FoundryEndpointRejected { detail }
             | VfError::SettingsError { detail }
             | VfError::Internal { detail } => {
                 if detail.is_empty() {
@@ -227,7 +243,9 @@ or set a manual endpoint override in Settings."
     }
 
     pub fn internal(detail: impl Into<String>) -> Self {
-        VfError::Internal { detail: detail.into() }
+        VfError::Internal {
+            detail: detail.into(),
+        }
     }
 }
 
@@ -266,7 +284,10 @@ mod tests {
         assert_eq!(VfError::NoMicrophone.code(), "NoMicrophone");
         assert_eq!(VfError::FoundryNotInstalled.code(), "FoundryNotInstalled");
         assert_eq!(
-            VfError::PhiNotInstalled { model: "phi-4-mini-instruct".into() }.code(),
+            VfError::PhiNotInstalled {
+                model: "phi-4-mini-instruct".into()
+            }
+            .code(),
             "PhiNotInstalled"
         );
         assert_eq!(
@@ -294,7 +315,9 @@ mod tests {
 
     #[test]
     fn serializes_to_code_message_hint() {
-        let e = VfError::PhiNotInstalled { model: "phi-4-mini-instruct".into() };
+        let e = VfError::PhiNotInstalled {
+            model: "phi-4-mini-instruct".into(),
+        };
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["code"], "PhiNotInstalled");
         assert!(json["message"].is_string());
@@ -326,9 +349,11 @@ mod tests {
 
     #[test]
     fn speech_engine_unavailable_hint_mentions_sherpa_feature() {
-        let hint = VfError::SpeechEngineUnavailable { detail: String::new() }
-            .hint()
-            .unwrap();
+        let hint = VfError::SpeechEngineUnavailable {
+            detail: String::new(),
+        }
+        .hint()
+        .unwrap();
         assert!(hint.contains("--features sherpa"));
         assert!(hint.to_lowercase().contains("mock"));
     }
@@ -342,22 +367,30 @@ mod tests {
 
     #[test]
     fn tts_synth_and_playback_carry_detail_hint() {
-        let synth = VfError::TtsSynthFailed { detail: "bad voice graph".into() };
+        let synth = VfError::TtsSynthFailed {
+            detail: "bad voice graph".into(),
+        };
         assert_eq!(synth.code(), "TtsSynthFailed");
         assert_eq!(synth.hint().unwrap(), "bad voice graph");
 
-        let play = VfError::TtsPlaybackFailed { detail: "no sink".into() };
+        let play = VfError::TtsPlaybackFailed {
+            detail: "no sink".into(),
+        };
         assert_eq!(play.code(), "TtsPlaybackFailed");
         assert_eq!(play.hint().unwrap(), "no sink");
     }
 
     #[test]
     fn download_and_checksum_errors_map_cleanly() {
-        let dl = VfError::ModelDownloadFailed { detail: "HTTP 404".into() };
+        let dl = VfError::ModelDownloadFailed {
+            detail: "HTTP 404".into(),
+        };
         assert_eq!(dl.code(), "ModelDownloadFailed");
         assert_eq!(dl.hint().unwrap(), "HTTP 404");
 
-        let sum = VfError::ModelChecksumMismatch { detail: "expected a, got b".into() };
+        let sum = VfError::ModelChecksumMismatch {
+            detail: "expected a, got b".into(),
+        };
         let json = serde_json::to_value(&sum).unwrap();
         assert_eq!(json["code"], "ModelChecksumMismatch");
         assert_eq!(json["hint"], "expected a, got b");
@@ -365,7 +398,9 @@ mod tests {
 
     #[test]
     fn unknown_model_hint_names_the_id() {
-        let e = VfError::UnknownModel { id: "does-not-exist".into() };
+        let e = VfError::UnknownModel {
+            id: "does-not-exist".into(),
+        };
         assert_eq!(e.code(), "UnknownModel");
         assert!(e.hint().unwrap().contains("does-not-exist"));
     }
@@ -373,11 +408,17 @@ mod tests {
     #[test]
     fn audio_guard_errors_have_stable_codes() {
         assert_eq!(
-            VfError::RecordingTooShort { detail: "0.1s".into() }.code(),
+            VfError::RecordingTooShort {
+                detail: "0.1s".into()
+            }
+            .code(),
             "RecordingTooShort"
         );
         assert_eq!(
-            VfError::NoSpeechDetected { detail: "rms 0.0001".into() }.code(),
+            VfError::NoSpeechDetected {
+                detail: "rms 0.0001".into()
+            }
+            .code(),
             "NoSpeechDetected"
         );
     }

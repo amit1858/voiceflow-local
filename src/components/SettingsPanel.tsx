@@ -21,6 +21,7 @@ interface Props {
   downloadingId?: string | null;
   /** Human progress label for the active download, e.g. "tiny.en-encoder 40%". */
   downloadLabel?: string | null;
+  mockTranscriptionAvailable?: boolean;
 }
 
 /** Settings form: providers, hotkey, defaults, model paths, auto-copy, and a
@@ -34,6 +35,7 @@ export function SettingsPanel({
   onDownload,
   downloadingId,
   downloadLabel,
+  mockTranscriptionAvailable = false,
 }: Props) {
   const [draft, setDraft] = useState<Settings>(settings);
 
@@ -89,7 +91,9 @@ export function SettingsPanel({
             set("transcription_provider", e.target.value as TranscriptionKind)
           }
         >
-          <option value="mock">Mock (no models needed)</option>
+          {mockTranscriptionAvailable && (
+            <option value="mock">Developer mock (canned transcript)</option>
+          )}
           <option value="sherpa">Local speech engine (sherpa-onnx)</option>
         </select>
       </label>
@@ -121,13 +125,13 @@ export function SettingsPanel({
           {sttModels.map((m) => (
             <option key={m.id} value={m.id}>
               {m.display_name} {m.bundled ? "(bundled)" : `(~${m.approx_mb} MB)`}
-              {m.installed ? " ✓" : ""}
+              {m.verified ? " ✓ verified" : m.installed ? " ⚠ corrupt" : ""}
             </option>
           ))}
         </select>
         <span className="field__hint">
-          The bundled tiny model works offline out of the box. Larger models are
-          optional downloads.
+          Consumer installers include the checksum-verified tiny model. Larger
+          models are optional downloads.
           {selectedStt && !selectedStt.installed && onDownload && (
             <>
               {" "}
@@ -172,13 +176,13 @@ export function SettingsPanel({
           {ttsVoices.map((m) => (
             <option key={m.id} value={m.id}>
               {m.display_name} {m.bundled ? "(bundled)" : `(~${m.approx_mb} MB)`}
-              {m.installed ? " ✓" : ""}
+              {m.verified ? " ✓ verified" : m.installed ? " ⚠ corrupt" : ""}
             </option>
           ))}
         </select>
         <span className="field__hint">
-          Used when the TTS provider is the local neural engine. The bundled
-          default voice works offline.
+          Used when the TTS provider is the local neural engine. Voices are
+          optional downloads in Chunk 1.
           {selectedVoice && !selectedVoice.installed && onDownload && (
             <>
               {" "}
@@ -218,8 +222,8 @@ export function SettingsPanel({
           placeholder="Leave blank to auto-discover the dynamic port"
         />
         <span className="field__hint">
-          For debugging only. Foundry Local uses a dynamic localhost port that is
-          discovered automatically; set this to force a specific endpoint.
+          For debugging only. Only loopback hosts (localhost, 127.0.0.0/8, ::1)
+          are accepted; redirects and proxy routing are disabled.
         </span>
       </label>
 

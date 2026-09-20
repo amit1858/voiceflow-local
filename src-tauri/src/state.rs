@@ -78,10 +78,12 @@ impl AppState {
     pub fn transcriber(&self) -> Result<Box<dyn TranscriptionProvider>, VfError> {
         let settings = self.current_settings();
         match settings.transcription_provider {
-            TranscriptionKind::Mock => Ok(Box::new(MockTranscriptionProvider::new())),
+            TranscriptionKind::Mock if Settings::runtime_mode().mock_transcription_allowed() => {
+                Ok(Box::new(MockTranscriptionProvider::new()))
+            }
+            TranscriptionKind::Mock => Err(VfError::MockTranscriptionDisabled),
             TranscriptionKind::Sherpa => {
-                let provider =
-                    SherpaSttProvider::from_model(&self.model_dir, &settings.stt_model)?;
+                let provider = SherpaSttProvider::from_model(&self.model_dir, &settings.stt_model)?;
                 Ok(Box::new(provider))
             }
         }
@@ -107,8 +109,7 @@ impl AppState {
         match settings.tts_provider {
             TtsKind::Mock => Ok(Box::new(MockTtsProvider::new())),
             TtsKind::Sherpa => {
-                let provider =
-                    SherpaTtsProvider::from_voice(&self.model_dir, &settings.tts_voice)?;
+                let provider = SherpaTtsProvider::from_voice(&self.model_dir, &settings.tts_voice)?;
                 Ok(Box::new(provider))
             }
         }

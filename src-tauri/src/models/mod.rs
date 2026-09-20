@@ -1,11 +1,9 @@
 //! Local speech model manager: registry, presence checks, checksum
 //! verification, and progressive downloads.
 //!
-//! Delivery is **hybrid**: a tiny STT model and one default TTS voice are marked
-//! `bundled` so the packaged app works fully offline on first run (fetched into
-//! the bundle at package time — never committed to git). Larger/better STT
-//! models and extra voices are OPTIONAL, checksum-verified downloads with
-//! progress events streamed to the UI.
+//! Delivery is **hybrid**: the default tiny STT model is staged and verified at
+//! package time so the consumer installer works offline on first run. Other
+//! models and voices are optional, checksum-verified downloads.
 //!
 //! Models live under `<app data>/models/{stt,tts}/<id>/`. The manager is
 //! engine-agnostic (no sherpa dependency) so it always compiles, even in the
@@ -55,10 +53,8 @@ pub struct ModelFile {
     pub role: FileRole,
     pub url: &'static str,
     pub filename: &'static str,
-    /// Optional pinned SHA-256 (lowercase hex). When present the download is
-    /// verified and rejected on mismatch; when `None` the file is accepted as-is
-    /// (still fetched over TLS). Pin these to harden a release.
-    pub sha256: Option<&'static str>,
+    /// Required pinned SHA-256 (lowercase hex).
+    pub sha256: &'static str,
 }
 
 /// A registered model (a set of files that together form a usable STT model or
@@ -68,9 +64,12 @@ pub struct ModelEntry {
     pub kind: ModelKind,
     pub display_name: &'static str,
     pub description: &'static str,
-    /// Shipped with the app for offline first-run.
+    /// Actually staged into the consumer installer by `prepare-release-models.ps1`.
     pub bundled: bool,
     pub approx_mb: u32,
+    pub source: &'static str,
+    pub revision: &'static str,
+    pub license: &'static str,
     pub files: &'static [ModelFile],
 }
 
@@ -100,6 +99,26 @@ impl ModelEntry {
             std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
         })
     }
+
+    /// Verify every registered file is present, non-empty, and matches its
+    /// immutable SHA-256 pin.
+    pub fn verify(&self, models_root: &Path) -> Result<(), VfError> {
+        for file in self.files {
+            let path = self.file_path(models_root, file);
+            let metadata = std::fs::metadata(&path).map_err(|_| VfError::ModelMissing {
+                expected_path: path.display().to_string(),
+                hint: "Download the model from Settings or reinstall the consumer package."
+                    .to_string(),
+            })?;
+            if metadata.len() == 0 {
+                return Err(VfError::ModelInvalid {
+                    detail: format!("{} is empty", path.display()),
+                });
+            }
+            verify_checksum(&path, file.sha256)?;
+        }
+        Ok(())
+    }
 }
 
 /// The full built-in model registry.
@@ -112,24 +131,27 @@ pub static REGISTRY: &[ModelEntry] = &[
         description: "Small, fast English speech-to-text. Bundled for offline first run.",
         bundled: true,
         approx_mb: 100,
+        source: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en",
+        revision: "d026532c022fa99fd789d6b32446a1df7b6bfc43",
+        license: "MIT (OpenAI Whisper model); retain upstream attribution",
         files: &[
             ModelFile {
                 role: FileRole::SttEncoder,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-encoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/d026532c022fa99fd789d6b32446a1df7b6bfc43/tiny.en-encoder.int8.onnx",
                 filename: "tiny.en-encoder.int8.onnx",
-                sha256: None,
+                sha256: "0ce578b827c94a961aacb8fa14b02f096504b337e5c94be37c36238cbe3e8bc6",
             },
             ModelFile {
                 role: FileRole::SttDecoder,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-decoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/d026532c022fa99fd789d6b32446a1df7b6bfc43/tiny.en-decoder.int8.onnx",
                 filename: "tiny.en-decoder.int8.onnx",
-                sha256: None,
+                sha256: "06c0e6ff6348d427e51839219d1c886c18cfdf411e629e33f5e1679bff9c1527",
             },
             ModelFile {
                 role: FileRole::SttTokens,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-tokens.txt",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/d026532c022fa99fd789d6b32446a1df7b6bfc43/tiny.en-tokens.txt",
                 filename: "tiny.en-tokens.txt",
-                sha256: None,
+                sha256: "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
             },
         ],
     },
@@ -141,24 +163,27 @@ pub static REGISTRY: &[ModelEntry] = &[
         description: "More accurate English speech-to-text. Optional download.",
         bundled: false,
         approx_mb: 155,
+        source: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en",
+        revision: "59eea950fc76df2453efb57e6c0fd334548e8ffe",
+        license: "MIT (OpenAI Whisper model); retain upstream attribution",
         files: &[
             ModelFile {
                 role: FileRole::SttEncoder,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-encoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/59eea950fc76df2453efb57e6c0fd334548e8ffe/base.en-encoder.int8.onnx",
                 filename: "base.en-encoder.int8.onnx",
-                sha256: None,
+                sha256: "ef6b936f4c9b1d90a3b68634b60c4ed8576b26172b33c2535ec0e933c9edb823",
             },
             ModelFile {
                 role: FileRole::SttDecoder,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-decoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/59eea950fc76df2453efb57e6c0fd334548e8ffe/base.en-decoder.int8.onnx",
                 filename: "base.en-decoder.int8.onnx",
-                sha256: None,
+                sha256: "f7162ad6db2dbef16cfaeaa7f945b9d7dd9c1b8d472f6aca82f2273d185e4d41",
             },
             ModelFile {
                 role: FileRole::SttTokens,
-                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/main/base.en-tokens.txt",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base.en/resolve/59eea950fc76df2453efb57e6c0fd334548e8ffe/base.en-tokens.txt",
                 filename: "base.en-tokens.txt",
-                sha256: None,
+                sha256: "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930",
             },
         ],
     },
@@ -167,27 +192,30 @@ pub static REGISTRY: &[ModelEntry] = &[
         id: "vits-ljs",
         kind: ModelKind::Tts,
         display_name: "VITS LJSpeech (English, female)",
-        description: "Natural English neural voice. Bundled default TTS voice.",
-        bundled: true,
+        description: "Natural English neural voice. Optional download.",
+        bundled: false,
         approx_mb: 115,
+        source: "https://huggingface.co/csukuangfj/vits-ljs",
+        revision: "7ac337c834f318e45a34037cb3371cc3929187ff",
+        license: "Apache-2.0; LJ Speech dataset is public domain",
         files: &[
             ModelFile {
                 role: FileRole::TtsModel,
-                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/vits-ljs.onnx",
+                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/7ac337c834f318e45a34037cb3371cc3929187ff/vits-ljs.onnx",
                 filename: "vits-ljs.onnx",
-                sha256: None,
+                sha256: "5bbd273797a9ecf8d94bd6ec02ad16cb41cbb85f055ad98d528ced3e44c9b31a",
             },
             ModelFile {
                 role: FileRole::TtsTokens,
-                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/tokens.txt",
+                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/7ac337c834f318e45a34037cb3371cc3929187ff/tokens.txt",
                 filename: "tokens.txt",
-                sha256: None,
+                sha256: "5fee2c6b238d712287f2ecb08f34a8a8b413bcb7390862ef6fb6fd6f0f8d3a17",
             },
             ModelFile {
                 role: FileRole::TtsLexicon,
-                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/main/lexicon.txt",
+                url: "https://huggingface.co/csukuangfj/vits-ljs/resolve/7ac337c834f318e45a34037cb3371cc3929187ff/lexicon.txt",
                 filename: "lexicon.txt",
-                sha256: None,
+                sha256: "bdccfc6da71c45c48e2e0056fcf0aab760577c5f959f6c1b5eb3e3e916fd5a0e",
             },
         ],
     },
@@ -218,6 +246,10 @@ pub struct ModelInfo {
     pub bundled: bool,
     pub approx_mb: u32,
     pub installed: bool,
+    pub verified: bool,
+    pub source: String,
+    pub revision: String,
+    pub license: String,
 }
 
 /// List all registered models with their installed state.
@@ -232,6 +264,10 @@ pub fn list_models(models_root: &Path) -> Vec<ModelInfo> {
             bundled: e.bundled,
             approx_mb: e.approx_mb,
             installed: e.is_present(models_root),
+            verified: e.verify(models_root).is_ok(),
+            source: e.source.to_string(),
+            revision: e.revision.to_string(),
+            license: e.license.to_string(),
         })
         .collect()
 }
@@ -305,13 +341,12 @@ where
     for (idx, file) in entry.files.iter().enumerate() {
         let dest = entry.file_path(models_root, file);
 
-        // Skip if already present and (when pinned) checksum-valid.
-        if std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
-            let ok = match file.sha256 {
-                Some(sum) => verify_checksum(&dest, sum).is_ok(),
-                None => true,
-            };
-            if ok {
+        // Skip only when the existing file matches the immutable checksum.
+        if std::fs::metadata(&dest)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+        {
+            if verify_checksum(&dest, file.sha256).is_ok() {
                 let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                 on_progress(DownloadProgress {
                     model_id: id.to_string(),
@@ -324,13 +359,13 @@ where
                 });
                 continue;
             }
+            std::fs::remove_file(&dest).map_err(|e| VfError::ModelDownloadFailed {
+                detail: format!("could not remove corrupt {}: {e}", dest.display()),
+            })?;
         }
 
         download_one(client, file, &dest, id, idx, file_count, &on_progress).await?;
-
-        if let Some(sum) = file.sha256 {
-            verify_checksum(&dest, sum)?;
-        }
+        verify_checksum(&dest, file.sha256)?;
 
         let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
         on_progress(DownloadProgress {
@@ -376,11 +411,13 @@ where
 
     let total = resp.content_length();
     let part = dest.with_extension("part");
-    let mut out = tokio::fs::File::create(&part)
-        .await
-        .map_err(|e| VfError::ModelDownloadFailed {
-            detail: format!("could not create {}: {e}", part.display()),
-        })?;
+    let mut part_guard = PartialDownload::new(part.clone());
+    let mut out =
+        tokio::fs::File::create(&part)
+            .await
+            .map_err(|e| VfError::ModelDownloadFailed {
+                detail: format!("could not create {}: {e}", part.display()),
+            })?;
 
     let mut received: u64 = 0;
     let mut stream = resp.bytes_stream();
@@ -405,7 +442,16 @@ where
         });
     }
 
-    out.flush().await.ok();
+    out.flush()
+        .await
+        .map_err(|e| VfError::ModelDownloadFailed {
+            detail: format!("could not flush {}: {e}", part.display()),
+        })?;
+    out.sync_all()
+        .await
+        .map_err(|e| VfError::ModelDownloadFailed {
+            detail: format!("could not sync {}: {e}", part.display()),
+        })?;
     drop(out);
 
     tokio::fs::rename(&part, dest)
@@ -413,7 +459,76 @@ where
         .map_err(|e| VfError::ModelDownloadFailed {
             detail: format!("could not finalize {}: {e}", dest.display()),
         })?;
+    part_guard.disarm();
 
+    Ok(())
+}
+
+struct PartialDownload {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl PartialDownload {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialDownload {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Copy verified package resources into app data on first run. Existing valid
+/// files are preserved; corrupt files are replaced from the verified bundle.
+pub fn install_bundled_models(resource_root: &Path, models_root: &Path) -> Result<(), VfError> {
+    for entry in REGISTRY.iter().filter(|entry| entry.bundled) {
+        let bundled_dir = resource_root
+            .join("models")
+            .join(entry.kind.subdir())
+            .join(entry.id);
+        for file in entry.files {
+            let source = bundled_dir.join(file.filename);
+            verify_checksum(&source, file.sha256).map_err(|e| VfError::ModelInvalid {
+                detail: format!("bundled model verification failed: {e}"),
+            })?;
+            let destination = entry.file_path(models_root, file);
+            if destination.exists() && verify_checksum(&destination, file.sha256).is_ok() {
+                continue;
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| VfError::ModelInvalid {
+                    detail: format!("could not create {}: {e}", parent.display()),
+                })?;
+            }
+            let staged = destination.with_extension("installing");
+            std::fs::copy(&source, &staged).map_err(|e| VfError::ModelInvalid {
+                detail: format!(
+                    "could not copy bundled model {} to {}: {e}",
+                    source.display(),
+                    staged.display()
+                ),
+            })?;
+            verify_checksum(&staged, file.sha256)?;
+            if destination.exists() {
+                std::fs::remove_file(&destination).map_err(|e| VfError::ModelInvalid {
+                    detail: format!("could not replace {}: {e}", destination.display()),
+                })?;
+            }
+            std::fs::rename(&staged, &destination).map_err(|e| VfError::ModelInvalid {
+                detail: format!("could not activate {}: {e}", destination.display()),
+            })?;
+        }
+        entry.verify(models_root)?;
+    }
     Ok(())
 }
 
@@ -423,10 +538,26 @@ mod tests {
 
     #[test]
     fn registry_has_bundled_defaults_for_both_kinds() {
-        assert!(REGISTRY.iter().any(|e| e.kind == ModelKind::Stt && e.bundled));
-        assert!(REGISTRY.iter().any(|e| e.kind == ModelKind::Tts && e.bundled));
+        assert!(REGISTRY
+            .iter()
+            .any(|e| e.kind == ModelKind::Stt && e.bundled));
+        assert!(!REGISTRY
+            .iter()
+            .any(|e| e.kind == ModelKind::Tts && e.bundled));
         assert_eq!(default_id(ModelKind::Stt), "whisper-tiny-en");
         assert_eq!(default_id(ModelKind::Tts), "vits-ljs");
+    }
+
+    #[test]
+    fn every_registry_file_has_an_immutable_url_and_sha256() {
+        for entry in REGISTRY {
+            assert!(entry.revision.len() >= 40);
+            for file in entry.files {
+                assert!(file.url.contains(entry.revision));
+                assert_eq!(file.sha256.len(), 64);
+                assert!(file.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+            }
+        }
     }
 
     #[test]
@@ -483,5 +614,20 @@ mod tests {
         let e = find("whisper-tiny-en").unwrap();
         let root = std::env::temp_dir().join(format!("vf-empty-{}", uuid::Uuid::new_v4()));
         assert!(!e.is_present(&root));
+    }
+
+    #[test]
+    fn verify_rejects_present_but_corrupt_model() {
+        let entry = find("whisper-tiny-en").unwrap();
+        let root = std::env::temp_dir().join(format!("vf-corrupt-{}", uuid::Uuid::new_v4()));
+        let dir = entry.dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in entry.files {
+            std::fs::write(dir.join(file.filename), b"not a model").unwrap();
+        }
+        assert!(entry.is_present(&root));
+        let err = entry.verify(&root).unwrap_err();
+        assert_eq!(err.code(), "ModelChecksumMismatch");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

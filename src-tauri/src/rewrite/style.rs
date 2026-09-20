@@ -148,7 +148,10 @@ mod tests {
     fn strips_kindly_case_insensitively() {
         let rules = StyleRules::default();
         assert_eq!(rules.apply("Kindly review this"), "Please review this");
-        assert_eq!(rules.apply("Please kindly send it"), "Please please send it");
+        assert_eq!(
+            rules.apply("Please kindly send it"),
+            "Please please send it"
+        );
     }
 
     #[test]

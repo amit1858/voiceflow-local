@@ -85,13 +85,16 @@ impl ActiveRecording {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
         let thread_path = output_path.clone();
-        let thread = std::thread::spawn(move || {
-            capture_loop(thread_path, ready_tx, stop_rx, on_level)
-        });
+        let thread =
+            std::thread::spawn(move || capture_loop(thread_path, ready_tx, stop_rx, on_level));
 
         // Wait for the capture thread to report whether the stream started.
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(ActiveRecording { stop_tx, thread, output_path }),
+            Ok(Ok(())) => Ok(ActiveRecording {
+                stop_tx,
+                thread,
+                output_path,
+            }),
             Ok(Err(e)) => {
                 let _ = thread.join();
                 Err(e)
@@ -366,7 +369,9 @@ fn map_stream_error(msg: &str) -> VfError {
     {
         VfError::MicPermissionDenied
     } else {
-        VfError::AudioCaptureFailed { detail: msg.to_string() }
+        VfError::AudioCaptureFailed {
+            detail: msg.to_string(),
+        }
     }
 }
 

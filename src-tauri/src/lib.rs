@@ -4,6 +4,11 @@
 //! resolves the whisper model directory, manages [`AppState`], and exposes the
 //! command handlers to the React frontend.
 
+#[cfg(all(not(debug_assertions), not(feature = "sherpa")))]
+compile_error!(
+    "Consumer release builds must include the `sherpa` feature; mock-only release builds are forbidden."
+);
+
 mod audio;
 mod commands;
 mod errors;
@@ -39,16 +44,32 @@ pub fn run() {
         .setup(|app| {
             // Resolve the app data dir and `<app data>/models`, where the whisper
             // GGML model lives.
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
+            let app_data_dir = app.path().app_data_dir()?;
             let model_dir = app_data_dir.join("models");
-            if let Err(e) = std::fs::create_dir_all(&model_dir) {
-                eprintln!("Warning: could not create model dir {model_dir:?}: {e}");
+            std::fs::create_dir_all(&model_dir)?;
+
+            let stale = crate::audio::temp::cleanup_stale()?;
+            if !stale.failures.is_empty() {
+                eprintln!(
+                    "VoiceFlow temp cleanup removed {} file(s), but {} failed: {}",
+                    stale.removed,
+                    stale.failures.len(),
+                    stale.failures.join("; ")
+                );
             }
 
-            // Load settings (mock-first defaults on a fresh install).
+            if !cfg!(debug_assertions) {
+                let resource_dir = app.path().resource_dir()?;
+                crate::models::install_bundled_models(&resource_dir.join("resources"), &model_dir)
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("consumer speech model installation failed: {e}"),
+                        )
+                    })?;
+            }
+
+            // Debug defaults to explicit mocks; consumer release defaults to Sherpa.
             let settings = Settings::load_or_default(&app_data_dir, &model_dir);
             let hotkey = settings.hotkey.clone();
 
